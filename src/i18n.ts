@@ -284,7 +284,7 @@ const LANGUAGE_COPY: Record<AppLanguage, LanguageCopy> = {
       [AGENT_STATE.TOOL_USE]: '施法中',
       [AGENT_STATE.ERROR]: '出了点状况',
       [AGENT_STATE.COMPLETE]: '任务达成',
-      [AGENT_STATE.NEEDS_ATTENTION]: '请长官确认',
+      [AGENT_STATE.NEEDS_ATTENTION]: '请主人确认',
     },
     windowSizeLabels: {
       [WINDOW_SIZE_PRESET.TINY]: '超小只',
@@ -296,20 +296,20 @@ const LANGUAGE_COPY: Record<AppLanguage, LanguageCopy> = {
     visibilityLabel: visible => (visible ? '暂时隐身' : '重新登场'),
     pet: {
       greetings: name => [
-        `长官！${name} 已经到岗，今天也由我来守着你的 AI 会话。`,
-        `${name} 待机中，长官一声令下我就开工。`,
+        `主人！${name} 已经到岗，今天也由我来守着你的 AI 会话。`,
+        `${name} 待机中，主人一声令下我就开工。`,
         `${name} 会帮你盯住工具状态和授权请求，不会让它们乱跑。`,
-        '长官！我们已经与CC、Codex、Copilot同步完成。',
+        '主人！我们已经与CC、Codex、Copilot同步完成。',
         '让我们一起改变这个世界吧！',
       ],
-      thinking: (agentLabel, name) => `[${agentLabel}] ${name} 的思考回路正在高速运转...`,
-      toolUse: (agentLabel, name, toolName) => toolName
-        ? `[${agentLabel}] ${name} 正在释放技能：${toolName}`
-        : `[${agentLabel}] ${name} 正在施法处理中...`,
-      error: (agentLabel, name) => `[${agentLabel}] ${name} 这边捕捉到一点异常波动。`,
-      complete: (agentLabel, name) => `[${agentLabel}] ${name} 已经把任务顺利拿下。`,
-      needsAttention: (agentLabel, name) => `[${agentLabel}] ${name} 需要长官看一眼。`,
-      idleResume: (agentLabel, name) => `${agentLabel} 这一轮结束啦，接下来由 ${name} 继续待机。`,
+      thinking: (agentLabel, name) => `${name}正看着[${agentLabel}]全力思考...`,
+      toolUse: (agentLabel, _name, toolName) => toolName
+        ? `主人，[${agentLabel}]正在使用技能：${toolName}。`
+        : `主人，[${agentLabel}]正在悄悄施展技能。`,
+      error: (agentLabel, name) => `${name}发现[${agentLabel}]似乎有点问题呢。`,
+      complete: (agentLabel, _name) => `主人，[${agentLabel}]的任务完成了哦。`,
+      needsAttention: (agentLabel, _name) => `主人，看一眼[${agentLabel}]那边吧。`,
+      idleResume: (agentLabel, name) => `[${agentLabel}]在休息。主人，${name}会继续陪着你。`,
     },
   },
   [APP_LANGUAGE.JAPANESE]: {

@@ -9,6 +9,7 @@ pub enum AgentType {
     Copilot,
     Codex,
     Gemini,
+    #[serde(rename = "opencode")]
     OpenCode,
 }
 
