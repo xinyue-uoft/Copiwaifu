@@ -398,6 +398,25 @@ const ERROR_STRATEGIES = [
   },
 ]
 
+const THINKING_STRATEGIES = [
+  {
+    id: 'anticipate',
+    instruction: 'The assistant just started this turn. Show you noticed the new request — react to the user intent in the session title or summary. Stay in the moment, do not pretend the work is finished.',
+  },
+  {
+    id: 'playful-guess',
+    instruction: 'The assistant is thinking about how to respond. Playfully guess at the kind of answer or approach that fits the request. Light, cheeky, never claim to know the final result.',
+  },
+  {
+    id: 'curious',
+    instruction: 'Express genuine curiosity about the question itself — why this task, what it touches. The assistant has not answered yet, so do not summarize anything.',
+  },
+  {
+    id: 'cheer-start',
+    instruction: 'Cheer on the start of a new turn. Brief, warm, present-tense. Reference the topic without claiming any outcome.',
+  },
+]
+
 function selectStrategy(strategies, context) {
   const seed = `${context.sessionId || ''}-${context.turnIndex || 0}`
   let hash = 0
@@ -408,8 +427,16 @@ function selectStrategy(strategies, context) {
 }
 
 function buildUserPrompt(context, languageName, maxLength) {
-  const state = context.state === 'error' ? 'error' : 'complete'
-  const strategies = state === 'error' ? ERROR_STRATEGIES : COMPLETE_STRATEGIES
+  const state = context.state === 'error'
+    ? 'error'
+    : context.state === 'thinking'
+      ? 'thinking'
+      : 'complete'
+  const strategies = state === 'error'
+    ? ERROR_STRATEGIES
+    : state === 'thinking'
+      ? THINKING_STRATEGIES
+      : COMPLETE_STRATEGIES
   const strategy = selectStrategy(strategies, context)
 
   const lines = [

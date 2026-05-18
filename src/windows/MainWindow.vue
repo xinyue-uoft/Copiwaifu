@@ -25,6 +25,7 @@ let idleGreetingTimer: ReturnType<typeof setInterval> | null = null
 let sameStateBubbleTimer: ReturnType<typeof setTimeout> | null = null
 let lastStateBubbleShownAt = 0
 let aiTalkRequestToken = 0
+let lastAiTalkOpeningFire = ''
 let unlistenAiTalkDebug: UnlistenFn | null = null
 let aiTalkDebugListenerDisposed = false
 
@@ -153,16 +154,24 @@ function isAiTalkTerminalState(state: TAgentState) {
   return state === AGENT_STATE.COMPLETE || state === AGENT_STATE.ERROR
 }
 
+function isAiTalkOpeningState(state: TAgentState) {
+  return state === AGENT_STATE.THINKING
+}
+
 function showStateBubble(text: string, duration = 2200) {
   lastStateBubbleShownAt = Date.now()
   say(text, duration)
 }
 
 async function showAiTalkOrFallback(state: TAgentState, fallbackText: string) {
+  // Show the static fallback immediately so the pet doesn't freeze during the ~1-2s API call.
+  if (fallbackText) {
+    showStateBubble(fallbackText)
+  }
+
   const agent = activeAgent.value ?? lastActiveAgent.value
   const sessionId = sessionInfo.value.sessionId
   if (!agent || !sessionId) {
-    showStateBubble(fallbackText)
     return
   }
 
@@ -191,22 +200,20 @@ async function showAiTalkOrFallback(state: TAgentState, fallbackText: string) {
       return
     }
 
-    const text = response?.text
-      ? limitAiTalkBubbleText(
-          response.text,
-          props.bootstrap.settings.windowSize,
-          props.bootstrap.settings.language,
-        )
-      : fallbackText
-
-    if (text) {
-      showStateBubble(text, response?.text ? 2800 : 2200)
+    if (response?.text) {
+      const text = limitAiTalkBubbleText(
+        response.text,
+        props.bootstrap.settings.windowSize,
+        props.bootstrap.settings.language,
+      )
+      if (text) {
+        // Replace the fallback with the AI-generated bubble.
+        showStateBubble(text, 2800)
+      }
     }
   } catch (error) {
     console.warn('failed to generate AI Talk bubble', error)
-    if (token === aiTalkRequestToken && currentState.value === state) {
-      showStateBubble(fallbackText)
-    }
+    // Fallback bubble is already visible from the immediate emit above.
   }
 }
 
@@ -329,6 +336,20 @@ watch([currentState, stateBubbleText, aiTalkTriggerKey], ([state, text, triggerK
     clearSameStateBubbleTimer()
     void showAiTalkOrFallback(state, text)
     return
+  }
+
+  if (isAiTalkOpeningState(state)) {
+    const context = sessionInfo.value.aiTalkContext
+    const turnKey = sessionInfo.value.sessionId && context
+      ? `${sessionInfo.value.sessionId}:${context.turnIndex ?? 0}:thinking`
+      : ''
+    if (turnKey && turnKey !== lastAiTalkOpeningFire) {
+      lastAiTalkOpeningFire = turnKey
+      clearSameStateBubbleTimer()
+      void showAiTalkOrFallback(state, text)
+      return
+    }
+    // Same turn, repeated thinking event: fall through to normal static-bubble refresh logic.
   }
 
   if (state !== previousState || isUrgentBubbleState(state)) {
