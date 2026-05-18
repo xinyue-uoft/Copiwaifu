@@ -156,7 +156,10 @@ impl NavigatorState {
         session_id: &str,
         state: AgentState,
     ) -> Option<AiTalkContext> {
-        if !matches!(state, AgentState::Complete | AgentState::Error) {
+        if !matches!(
+            state,
+            AgentState::Complete | AgentState::Error | AgentState::Thinking
+        ) {
             return None;
         }
 
