@@ -1,5 +1,5 @@
 // copiwaifu-opencode-plugin
-// version: v1
+// version: v2
 import fs from 'node:fs'
 import http from 'node:http'
 import os from 'node:os'
@@ -51,7 +51,7 @@ function postJson(port, payload) {
   })
 }
 
-function truncate(value) {
+function truncate(value, max = 180) {
   if (!value) {
     return undefined
   }
@@ -59,7 +59,7 @@ function truncate(value) {
   if (!text) {
     return undefined
   }
-  return text.length > 180 ? `${text.slice(0, 180)}...` : text
+  return text.length > max ? `${text.slice(0, max)}...` : text
 }
 
 function tryReadJson(file) {
@@ -126,10 +126,12 @@ function writeSession(sessionId, event, data) {
   catch {}
 }
 
+const EVENT_HISTORY_CAP = 100
+
 function appendEventHistory(existingEvents, event) {
-  const summary = truncate(event.summary)
+  const summary = truncate(event.summary, event.type === 'thinking' ? 600 : 180)
   const toolName = truncate(event.toolName)
-  const next = Array.isArray(existingEvents) ? existingEvents.slice(-19) : []
+  const next = Array.isArray(existingEvents) ? existingEvents.slice() : []
   next.push({
     type: event.type,
     eventType: event.type,
@@ -141,6 +143,16 @@ function appendEventHistory(existingEvents, event) {
     turnFingerprint: event.turnFingerprint,
     informative: isMeaningfulSummary(summary, toolName, event.type),
   })
+  if (next.length > EVENT_HISTORY_CAP) {
+    if (next[0]?.type === 'session_start') {
+      const pinned = next[0]
+      next.splice(0, next.length - (EVENT_HISTORY_CAP - 1))
+      next.unshift(pinned)
+    }
+    else {
+      next.splice(0, next.length - EVENT_HISTORY_CAP)
+    }
+  }
   return next
 }
 
@@ -225,6 +237,37 @@ function mapToolName(tool) {
   return `${tool}`.charAt(0).toUpperCase() + `${tool}`.slice(1)
 }
 
+function firstDefined(...values) {
+  return values.find(value => value !== undefined && value !== null && value !== '')
+}
+
+function formatPatterns(patterns) {
+  if (Array.isArray(patterns)) {
+    return patterns.filter(Boolean).join(' && ')
+  }
+  return patterns
+}
+
+function summarizeToolInput(input) {
+  if (!input || typeof input !== 'object') {
+    return undefined
+  }
+  return truncate(firstDefined(
+    input.command,
+    input.file_path,
+    input.filePath,
+    input.path,
+    input.url,
+    input.pattern,
+    input.prompt,
+    input.description,
+  ))
+}
+
+function compactToolOutput(output) {
+  return truncate(firstDefined(output?.title, output?.output, output?.error))
+}
+
 export default {
   id: 'copiwaifu',
   server: async ({ serverUrl }) => {
@@ -232,6 +275,30 @@ export default {
     const sessionTitle = new Map()
     const messageRoles = new Map()
     const latestAssistantText = new Map()
+    const pendingPermissions = new Map()
+    const PENDING_TTL_MS = 5 * 60 * 1000
+
+    function markPending(sessionID) {
+      if (sessionID) {
+        pendingPermissions.set(sessionID, Date.now())
+      }
+    }
+
+    function hasPending(sessionID) {
+      const ts = pendingPermissions.get(sessionID)
+      if (!ts) {
+        return false
+      }
+      if (Date.now() - ts > PENDING_TTL_MS) {
+        pendingPermissions.delete(sessionID)
+        return false
+      }
+      return true
+    }
+    const recentEvents = new Map()
+    const toolInputs = new Map()
+    const toolNames = new Map()
+    const reasoningStream = new Map()
     const localServerPort = serverUrl ? Number(serverUrl.port || 0) || null : null
 
     async function emit(event, sessionId, data = {}) {
@@ -249,15 +316,161 @@ export default {
       return raw ? `opencode-${raw}` : null
     }
 
+    function rememberSession(rawSessionID, info = {}) {
+      if (!rawSessionID) {
+        return
+      }
+      if (info.directory) {
+        sessionCwd.set(rawSessionID, info.directory)
+      }
+      if (info.title && !info.title.startsWith('New session')) {
+        sessionTitle.set(rawSessionID, info.title)
+      }
+    }
+
+    function allowEvent(key, windowMs = 1000) {
+      const now = Date.now()
+      for (const [cachedKey, timestamp] of recentEvents) {
+        if (now - timestamp > 5000) {
+          recentEvents.delete(cachedKey)
+        }
+      }
+      const previous = recentEvents.get(key)
+      if (previous && now - previous < windowMs) {
+        return false
+      }
+      recentEvents.set(key, now)
+      return true
+    }
+
+    async function emitOnce(key, event, sessionId, data = {}, windowMs) {
+      if (!sessionId || !allowEvent(key, windowMs)) {
+        return
+      }
+      await emit(event, sessionId, data)
+    }
+
+    async function emitThinking(rawSessionID, summary, extra = {}) {
+      const sessionId = getSessionId(rawSessionID)
+      await emitOnce(
+        `thinking:${rawSessionID}:${normalizeSummary(summary || 'opencode is thinking')}`,
+        'thinking',
+        sessionId,
+        {
+          working_directory: sessionCwd.get(rawSessionID),
+          session_title: truncate(sessionTitle.get(rawSessionID)),
+          summary: truncate(summary, 600) || 'OpenCode is thinking',
+          tool_name: 'OpenCode',
+          needs_attention: false,
+          ...extra,
+        },
+        250,
+      )
+    }
+
+    async function emitToolUse(rawSessionID, callID, tool, input) {
+      const sessionId = getSessionId(rawSessionID)
+      const toolName = mapToolName(tool)
+      await emitOnce(
+        `tool:${rawSessionID}:${callID || toolName}:use`,
+        'tool_use',
+        sessionId,
+        {
+          working_directory: sessionCwd.get(rawSessionID),
+          session_title: truncate(sessionTitle.get(rawSessionID)),
+          summary: summarizeToolInput(input) || `Running ${toolName}`,
+          tool_name: toolName,
+          needs_attention: false,
+        },
+      )
+    }
+
+    async function emitToolResult(rawSessionID, callID, tool, output, failed = false) {
+      const sessionId = getSessionId(rawSessionID)
+      const toolName = mapToolName(tool)
+      await emitOnce(
+        `tool:${rawSessionID}:${callID || toolName}:${failed ? 'error' : 'result'}`,
+        failed ? 'error' : 'tool_result',
+        sessionId,
+        {
+          working_directory: sessionCwd.get(rawSessionID),
+          session_title: truncate(sessionTitle.get(rawSessionID)),
+          summary: compactToolOutput(output) || `${failed ? 'Failed' : 'Finished'} ${toolName}`,
+          tool_name: toolName,
+          needs_attention: false,
+        },
+      )
+    }
+
+    async function emitPermissionRequest(input) {
+      const rawSessionID = input?.sessionID
+      if (!rawSessionID) {
+        return
+      }
+      const sessionId = getSessionId(rawSessionID)
+      const toolName = mapToolName(input?.permission || input?.type)
+      const summary = truncate(
+        formatPatterns(firstDefined(input?.patterns, input?.pattern))
+        || input?.title
+        || input?.metadata?.description,
+      ) || `OpenCode requests ${toolName}`
+      markPending(rawSessionID)
+      await emitOnce(
+        `permission:${rawSessionID}:${input?.id || input?.requestID || summary}`,
+        'permission_request',
+        sessionId,
+        {
+          working_directory: sessionCwd.get(rawSessionID),
+          session_title: truncate(sessionTitle.get(rawSessionID)),
+          summary,
+          tool_name: toolName,
+          needs_attention: true,
+        },
+      )
+    }
+
+    function clearPendingPermission(rawSessionID) {
+      if (rawSessionID) {
+        pendingPermissions.delete(rawSessionID)
+      }
+    }
+
     return {
+      'permission.ask': async (input, output) => {
+        if (output?.status !== 'ask') {
+          return
+        }
+        await emitPermissionRequest(input)
+      },
+
+      'tool.execute.before': async (input, output) => {
+        const toolKey = `${input.sessionID}:${input.callID}`
+        toolInputs.set(toolKey, output.args)
+        toolNames.set(toolKey, input.tool)
+        if (toolInputs.size > 300) {
+          const oldest = toolInputs.keys().next().value
+          toolInputs.delete(oldest)
+          toolNames.delete(oldest)
+        }
+        await emitToolUse(input.sessionID, input.callID, input.tool, output.args)
+      },
+
+      'tool.execute.after': async (input, output) => {
+        clearPendingPermission(input.sessionID)
+        await emitToolResult(input.sessionID, input.callID, input.tool, output)
+        toolInputs.delete(`${input.sessionID}:${input.callID}`)
+        toolNames.delete(`${input.sessionID}:${input.callID}`)
+      },
+
       event: async ({ event }) => {
         const type = event?.type
         const properties = event?.properties || {}
 
-        if (type === 'session.created' && properties.info?.id) {
-          const sessionId = getSessionId(properties.info.id)
+        if (type === 'session.created' && (properties.sessionID || properties.info?.id)) {
+          const rawSessionID = properties.sessionID || properties.info.id
+          const sessionId = getSessionId(rawSessionID)
           const cwd = properties.info.directory || undefined
-          sessionCwd.set(properties.info.id, cwd)
+          rememberSession(rawSessionID, properties.info)
           await emit('session_start', sessionId, {
             working_directory: cwd,
             session_title: truncate(properties.info.title),
@@ -268,18 +481,25 @@ export default {
           return
         }
 
-        if (type === 'session.updated' && properties.info?.id) {
-          if (properties.info.directory) {
-            sessionCwd.set(properties.info.id, properties.info.directory)
+        if (type === 'session.updated' && (properties.sessionID || properties.info?.id)) {
+          const rawSessionID = properties.sessionID || properties.info.id
+          const coldStart = !sessionCwd.has(rawSessionID)
+          if (coldStart) {
+            const sessionId = getSessionId(rawSessionID)
+            await emit('session_start', sessionId, {
+              working_directory: properties.info.directory || undefined,
+              session_title: truncate(properties.info.title),
+              summary: truncate(properties.info.title) || 'OpenCode session resumed',
+              tool_name: 'OpenCode',
+              needs_attention: false,
+            })
           }
-          if (properties.info.title && !properties.info.title.startsWith('New session')) {
-            sessionTitle.set(properties.info.id, properties.info.title)
-          }
+          rememberSession(rawSessionID, properties.info)
           if (properties.info.time?.archived) {
-            const sessionId = getSessionId(properties.info.id)
+            const sessionId = getSessionId(rawSessionID)
             await emit('session_end', sessionId, {
-              working_directory: sessionCwd.get(properties.info.id),
-              session_title: truncate(sessionTitle.get(properties.info.id) || properties.info.title),
+              working_directory: sessionCwd.get(rawSessionID),
+              session_title: truncate(sessionTitle.get(rawSessionID) || properties.info.title),
               summary: 'OpenCode session archived',
               tool_name: 'OpenCode',
               needs_attention: false,
@@ -288,11 +508,12 @@ export default {
           return
         }
 
-        if (type === 'session.deleted' && properties.info?.id) {
-          const sessionId = getSessionId(properties.info.id)
+        if (type === 'session.deleted' && (properties.sessionID || properties.info?.id)) {
+          const rawSessionID = properties.sessionID || properties.info.id
+          const sessionId = getSessionId(rawSessionID)
           await emit('session_end', sessionId, {
-            working_directory: sessionCwd.get(properties.info.id),
-            session_title: truncate(sessionTitle.get(properties.info.id)),
+            working_directory: sessionCwd.get(rawSessionID),
+            session_title: truncate(sessionTitle.get(rawSessionID)),
             summary: 'OpenCode session closed',
             tool_name: 'OpenCode',
             needs_attention: false,
@@ -301,25 +522,85 @@ export default {
         }
 
         if (type === 'session.status' && properties.sessionID && properties.status?.type === 'idle') {
+          if (hasPending(properties.sessionID)) {
+            return
+          }
           const sessionId = getSessionId(properties.sessionID)
-          await emit('complete', sessionId, {
-            working_directory: sessionCwd.get(properties.sessionID),
-            session_title: truncate(sessionTitle.get(properties.sessionID)),
-            summary: truncate(latestAssistantText.get(properties.sessionID)) || 'OpenCode finished this turn',
-            tool_name: 'OpenCode',
-            needs_attention: false,
-          })
+          await emitOnce(
+            `complete:${properties.sessionID}`,
+            'complete',
+            sessionId,
+            {
+              working_directory: sessionCwd.get(properties.sessionID),
+              session_title: truncate(sessionTitle.get(properties.sessionID)),
+              summary: truncate(latestAssistantText.get(properties.sessionID)) || 'OpenCode finished this turn',
+              tool_name: 'OpenCode',
+              needs_attention: false,
+            },
+            2000,
+          )
           return
         }
 
-        if (type === 'message.updated' && properties.info?.id && properties.info?.sessionID) {
+        if (type === 'session.idle' && properties.sessionID) {
+          pendingPermissions.delete(properties.sessionID)
+          const sessionId = getSessionId(properties.sessionID)
+          await emitOnce(
+            `complete:${properties.sessionID}`,
+            'complete',
+            sessionId,
+            {
+              working_directory: sessionCwd.get(properties.sessionID),
+              session_title: truncate(sessionTitle.get(properties.sessionID)),
+              summary: truncate(latestAssistantText.get(properties.sessionID)) || 'OpenCode finished this turn',
+              tool_name: 'OpenCode',
+              needs_attention: false,
+            },
+            2000,
+          )
+          return
+        }
+
+        if (type === 'message.part.delta' && properties.sessionID) {
+          if (properties.field === 'reasoning_content' && properties.delta) {
+            const key = `${properties.sessionID}:${properties.partID || ''}`
+            const acc = (reasoningStream.get(key) || '') + properties.delta
+            reasoningStream.set(key, acc)
+            if (reasoningStream.size > 100) {
+              reasoningStream.delete(reasoningStream.keys().next().value)
+            }
+            const sessionId = getSessionId(properties.sessionID)
+            await emitOnce(
+              `thinking-stream:${properties.sessionID}`,
+              'thinking',
+              sessionId,
+              {
+                working_directory: sessionCwd.get(properties.sessionID),
+                session_title: truncate(sessionTitle.get(properties.sessionID)),
+                summary: truncate(acc, 600) || 'OpenCode is thinking',
+                tool_name: 'OpenCode',
+                needs_attention: false,
+              },
+              800,
+            )
+          }
+          return
+        }
+
+        if (type === 'message.updated' && properties.info?.id && (properties.info?.sessionID || properties.sessionID)) {
+          const rawSessionID = properties.info.sessionID || properties.sessionID
           messageRoles.set(properties.info.id, {
             role: properties.info.role,
-            sessionID: properties.info.sessionID,
+            sessionID: rawSessionID,
           })
           if (messageRoles.size > 300) {
             messageRoles.delete(messageRoles.keys().next().value)
           }
+          return
+        }
+
+        if (type === 'message.part.updated' && properties.part?.sessionID && properties.part?.type === 'reasoning') {
+          await emitThinking(properties.part.sessionID, properties.part.text || properties.delta || 'OpenCode is thinking')
           return
         }
 
@@ -349,62 +630,41 @@ export default {
         }
 
         if (type === 'message.part.updated' && properties.part?.sessionID && properties.part?.type === 'tool') {
-          const sessionId = getSessionId(properties.part.sessionID)
-          const toolName = mapToolName(properties.part.tool)
           const status = properties.part.state?.status
           if (status === 'running' || status === 'pending') {
-            await emit('tool_use', sessionId, {
-              working_directory: sessionCwd.get(properties.part.sessionID),
-              session_title: truncate(sessionTitle.get(properties.part.sessionID)),
-              summary: truncate(
-                properties.part.state?.input?.command
-                || properties.part.state?.input?.file_path
-                || properties.part.state?.input?.path
-                || properties.part.state?.input?.prompt,
-              ) || `Running ${toolName}`,
-              tool_name: toolName,
-              needs_attention: false,
-            })
+            pendingPermissions.delete(properties.part.sessionID)
+            await emitToolUse(properties.part.sessionID, properties.part.callID, properties.part.tool, properties.part.state?.input)
             return
           }
           if (status === 'completed') {
-            await emit('tool_result', sessionId, {
-              working_directory: sessionCwd.get(properties.part.sessionID),
-              session_title: truncate(sessionTitle.get(properties.part.sessionID)),
-              summary: `Finished ${toolName}`,
-              tool_name: toolName,
-              needs_attention: false,
-            })
+            await emitToolResult(properties.part.sessionID, properties.part.callID, properties.part.tool, properties.part.state)
             return
           }
           if (status === 'error') {
-            await emit('error', sessionId, {
-              working_directory: sessionCwd.get(properties.part.sessionID),
-              session_title: truncate(sessionTitle.get(properties.part.sessionID)),
-              summary: `Failed ${toolName}`,
-              tool_name: toolName,
-              needs_attention: false,
-            })
+            await emitToolResult(properties.part.sessionID, properties.part.callID, properties.part.tool, properties.part.state, true)
           }
           return
         }
 
         if (type === 'permission.asked' && properties.sessionID) {
-          const sessionId = getSessionId(properties.sessionID)
-          const toolName = mapToolName(properties.permission)
-          await emit('permission_request', sessionId, {
-            working_directory: sessionCwd.get(properties.sessionID),
-            session_title: truncate(sessionTitle.get(properties.sessionID)),
-            summary: truncate(properties.patterns?.join(' && ')) || `OpenCode requests ${toolName}`,
-            tool_name: toolName,
-            needs_attention: true,
-          })
+          await emitPermissionRequest(properties)
+          return
+        }
+
+        if (type === 'permission.updated' && properties.sessionID) {
+          await emitPermissionRequest(properties)
+          return
+        }
+
+        if (type === 'permission.replied' && properties.sessionID) {
+          clearPendingPermission(properties.sessionID)
           return
         }
 
         if (type === 'question.asked' && properties.sessionID) {
           const sessionId = getSessionId(properties.sessionID)
           const firstQuestion = properties.questions?.find?.(question => question?.question)?.question
+          markPending(properties.sessionID)
           await emit('permission_request', sessionId, {
             working_directory: sessionCwd.get(properties.sessionID),
             session_title: truncate(sessionTitle.get(properties.sessionID)),
@@ -412,6 +672,11 @@ export default {
             tool_name: 'AskUserQuestion',
             needs_attention: true,
           })
+          return
+        }
+
+        if ((type === 'question.replied' || type === 'question.rejected') && properties.sessionID) {
+          clearPendingPermission(properties.sessionID)
         }
       },
     }
