@@ -53,7 +53,8 @@ pub fn reduce_session(
     let stale_after_terminal = session.terminal_state.is_some()
         && !event.data.turn_start
         && terminal_state.is_none()
-        && event.event != EventType::SessionEnd;
+        && event.event != EventType::SessionEnd
+        && event.event != EventType::NeedsAttention;
 
     push_event_digest(session, event, now_ms);
 
@@ -118,21 +119,22 @@ pub fn reduce_session(
             session.needs_attention = Some(false);
         }
         EventType::Complete => {
-            session.phase = SessionPhase::Completed;
-            session.terminal_state = Some(AgentState::Complete);
-            session.tool_name = None;
-            session.needs_attention = Some(false);
+            if session.phase != SessionPhase::WaitingAttention {
+                session.phase = SessionPhase::Completed;
+                session.terminal_state = Some(AgentState::Complete);
+                session.tool_name = None;
+                session.needs_attention = Some(false);
+            }
         }
         EventType::NeedsAttention => {
-            if !stale_after_terminal {
-                session.phase = SessionPhase::WaitingAttention;
-                session.tool_name = event
-                    .data
-                    .tool_name
-                    .clone()
-                    .or_else(|| session.tool_name.clone());
-                session.needs_attention = Some(true);
-            }
+            session.phase = SessionPhase::WaitingAttention;
+            session.terminal_state = None;
+            session.tool_name = event
+                .data
+                .tool_name
+                .clone()
+                .or_else(|| session.tool_name.clone());
+            session.needs_attention = Some(true);
         }
     }
 
