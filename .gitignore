@@ -13,6 +13,11 @@ dist-ssr
 *.local
 .tauri/
 
+# Environment files (never commit secrets)
+.env
+.env.*
+!.env.example
+
 # Sidecar build output
 sidecar/ai-runtime/bundle/
 
