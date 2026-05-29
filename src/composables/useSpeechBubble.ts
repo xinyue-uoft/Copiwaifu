@@ -6,6 +6,8 @@ const MAX_TEXT_LENGTH = 100
 const TYPING_SPEED = 60
 const DEFAULT_DURATION = 3000
 const AI_TALK_LIMITS: Record<WindowSizePreset, { cjk: number, latin: number }> = {
+  [WINDOW_SIZE_PRESET.NANO]: { cjk: 10, latin: 18 },
+  [WINDOW_SIZE_PRESET.MICRO]: { cjk: 16, latin: 30 },
   [WINDOW_SIZE_PRESET.TINY]: { cjk: 24, latin: 45 },
   [WINDOW_SIZE_PRESET.SMALL]: { cjk: 36, latin: 70 },
   [WINDOW_SIZE_PRESET.MEDIUM]: { cjk: 42, latin: 80 },

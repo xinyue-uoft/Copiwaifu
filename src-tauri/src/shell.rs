@@ -38,6 +38,8 @@ const MENU_EXIT: &str = "exit-app";
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum WindowSizePreset {
+    Nano,
+    Micro,
     Tiny,
     Small,
     Medium,
@@ -787,6 +789,8 @@ fn apply_main_window_size(window: &WebviewWindow, preset: &WindowSizePreset) -> 
 
 fn window_size_dimensions(preset: &WindowSizePreset) -> (f64, f64) {
     match preset {
+        WindowSizePreset::Nano => (60.0, 114.0),
+        WindowSizePreset::Micro => (120.0, 228.0),
         WindowSizePreset::Tiny => (240.0, 456.0),
         WindowSizePreset::Small => (320.0, 608.0),
         WindowSizePreset::Medium => (400.0, 760.0),

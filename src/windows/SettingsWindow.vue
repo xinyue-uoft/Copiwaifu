@@ -698,6 +698,22 @@ function sanitizeAiTalkHeaders(headers: Record<string, string>) {
           <label class="choice">
             <input
               v-model="form.windowSize"
+              :value="WINDOW_SIZE_PRESET.NANO"
+              type="radio"
+            >
+            <span>{{ ui.windowSizeLabels[WINDOW_SIZE_PRESET.NANO] }}</span>
+          </label>
+          <label class="choice">
+            <input
+              v-model="form.windowSize"
+              :value="WINDOW_SIZE_PRESET.MICRO"
+              type="radio"
+            >
+            <span>{{ ui.windowSizeLabels[WINDOW_SIZE_PRESET.MICRO] }}</span>
+          </label>
+          <label class="choice">
+            <input
+              v-model="form.windowSize"
               :value="WINDOW_SIZE_PRESET.TINY"
               type="radio"
             >

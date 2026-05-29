@@ -326,6 +326,10 @@ fn resolve_sidecar_script(app_handle: &AppHandle) -> Option<PathBuf> {
 fn max_ai_talk_length(window_size: &WindowSizePreset, language: AppLanguage) -> usize {
     let cjk = matches!(language, AppLanguage::Chinese | AppLanguage::Japanese);
     match (window_size, cjk) {
+        (WindowSizePreset::Nano, true) => 10,
+        (WindowSizePreset::Nano, false) => 18,
+        (WindowSizePreset::Micro, true) => 16,
+        (WindowSizePreset::Micro, false) => 30,
         (WindowSizePreset::Tiny, true) => 24,
         (WindowSizePreset::Tiny, false) => 45,
         (WindowSizePreset::Small, true) => 36,

@@ -57,6 +57,28 @@ const bubbleClassName = computed(() => `speech-bubble--${props.windowSize}`)
   transform: translateX(-50%);
 }
 
+.speech-bubble--nano {
+  --bubble-width: min(56px, calc(100vw - 4px));
+  --bubble-min-height: 16px;
+  --bubble-padding: 3px 4px;
+  --bubble-radius: 6px;
+  --bubble-border-width: 1px;
+  --bubble-font-size: 8px;
+  --bubble-pointer-size: 4px;
+  --bubble-offset-y: 8px;
+}
+
+.speech-bubble--micro {
+  --bubble-width: min(112px, calc(100vw - 8px));
+  --bubble-min-height: 22px;
+  --bubble-padding: 5px 7px;
+  --bubble-radius: 8px;
+  --bubble-border-width: 1px;
+  --bubble-font-size: 9px;
+  --bubble-pointer-size: 5px;
+  --bubble-offset-y: 14px;
+}
+
 .speech-bubble--small {
   --bubble-width: min(224px, calc(100vw - 16px));
   --bubble-min-height: 42px;

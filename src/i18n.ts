@@ -180,6 +180,8 @@ const LANGUAGE_COPY: Record<AppLanguage, LanguageCopy> = {
       [AGENT_STATE.NEEDS_ATTENTION]: 'Awaiting Commander Confirmation',
     },
     windowSizeLabels: {
+      [WINDOW_SIZE_PRESET.NANO]: 'Nano',
+      [WINDOW_SIZE_PRESET.MICRO]: 'Micro',
       [WINDOW_SIZE_PRESET.TINY]: 'Tiny',
       [WINDOW_SIZE_PRESET.SMALL]: 'Petite',
       [WINDOW_SIZE_PRESET.MEDIUM]: 'Standard',
@@ -287,6 +289,8 @@ const LANGUAGE_COPY: Record<AppLanguage, LanguageCopy> = {
       [AGENT_STATE.NEEDS_ATTENTION]: '请主人确认',
     },
     windowSizeLabels: {
+      [WINDOW_SIZE_PRESET.NANO]: '豆点只',
+      [WINDOW_SIZE_PRESET.MICRO]: '迷你只',
       [WINDOW_SIZE_PRESET.TINY]: '超小只',
       [WINDOW_SIZE_PRESET.SMALL]: '小只',
       [WINDOW_SIZE_PRESET.MEDIUM]: '标准',
@@ -394,6 +398,8 @@ const LANGUAGE_COPY: Record<AppLanguage, LanguageCopy> = {
       [AGENT_STATE.NEEDS_ATTENTION]: '確認待ち',
     },
     windowSizeLabels: {
+      [WINDOW_SIZE_PRESET.NANO]: '極豆',
+      [WINDOW_SIZE_PRESET.MICRO]: '微小',
       [WINDOW_SIZE_PRESET.TINY]: '極小',
       [WINDOW_SIZE_PRESET.SMALL]: '小さめ',
       [WINDOW_SIZE_PRESET.MEDIUM]: '標準',

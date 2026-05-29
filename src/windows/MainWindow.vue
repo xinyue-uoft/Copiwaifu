@@ -422,6 +422,14 @@ watch(
   -webkit-user-select: none;
 }
 
+.container--nano {
+  --speech-region-height: 24px;
+}
+
+.container--micro {
+  --speech-region-height: 48px;
+}
+
 .container--tiny {
   --speech-region-height: 92px;
 }
