@@ -1,17 +1,22 @@
 // Pet-side PASSIVE notification window.
 //
-// Shows a card per Claude Code session that is waiting for a permission decision
-// (the reducer's `needs_attention` / WaitingAttention). It makes NO decision —
-// the user resolves permissions in their terminal / Claude as usual. Each card
-// auto-dissolves the instant the reducer clears `needs_attention` (the session's
-// next event), and a card can be locally Dismissed (muted) without touching CC.
+// Shows a card per Claude Code session that has been waiting for a permission
+// decision for more than DEBOUNCE_MS. The debounce is the crux: every tool call
+// briefly flips a session into `needs_attention` and back (especially auto-mode
+// agent sessions), so without it the pet would flash a card — and churn its
+// summary — on every command. Only a session that *stays* waiting (a genuine
+// prompt the user must act on) survives the debounce.
 //
-// Driven entirely by the existing observe event stream — no blocking hook, no
-// fail-open, no conflict with Claude's own permission UI. The "mute" state lives
-// in the backend (NotificationStore) so window visibility and dismissal stay
-// consistent (the backend is the single source of truth for what's shown).
+// It makes NO decision — the user resolves permissions in their terminal /
+// Claude. A card auto-dissolves when the reducer clears `needs_attention`, and a
+// card can be locally Dismissed (muted) without touching CC. Driven entirely by
+// the existing observe event stream — no blocking hook, no fail-open.
 
-use std::{collections::HashMap, sync::Mutex};
+use std::{
+    collections::HashMap,
+    sync::Mutex,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
@@ -20,10 +25,20 @@ use super::events::{NavigatorSessionPayload, NavigatorSessionsPayload};
 
 pub const NOTIFICATION_WINDOW_LABEL: &str = "notification";
 const NOTIFICATION_CHANGED_EVENT: &str = "notification:changed";
+// A session must stay continuously `needs_attention` for at least this long
+// before its card appears — filters out the brief spikes of auto-handled tool
+// calls, leaving only genuine prompts that actually wait for the user.
+const DEBOUNCE_MS: u64 = 2500;
 
-/// session_id -> the dismissed pending-signature. A card is hidden only while the
-/// SAME pending is still showing; a new pending (different signature) re-shows.
-pub struct NotificationStore(pub Mutex<HashMap<String, String>>);
+pub struct NotificationStore(pub Mutex<NotifState>);
+
+#[derive(Default)]
+pub struct NotifState {
+    /// session_id -> dismissed pending-signature (Dismiss mute).
+    muted: HashMap<String, String>,
+    /// session_id -> epoch-ms when it was first observed pending (debounce timer).
+    first_pending_ms: HashMap<String, u64>,
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct NotificationCard {
@@ -45,6 +60,13 @@ pub struct NotificationPayload {
     pub cards: Vec<NotificationCard>,
 }
 
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// Distinguishes one pending prompt from the next on the same session, so a
 /// Dismiss only mutes the specific request, not all future ones.
 fn signature(session: &NavigatorSessionPayload) -> String {
@@ -56,29 +78,40 @@ fn signature(session: &NavigatorSessionPayload) -> String {
     )
 }
 
-fn build_cards(
-    sessions: &NavigatorSessionsPayload,
-    muted: &mut HashMap<String, String>,
-) -> Vec<NotificationCard> {
+fn build_cards(sessions: &NavigatorSessionsPayload, state: &mut NotifState) -> Vec<NotificationCard> {
+    let now = now_ms();
     let pending: Vec<&NavigatorSessionPayload> = sessions
         .sessions
         .iter()
         .filter(|s| s.needs_attention == Some(true))
         .collect();
 
-    // Forget mutes for sessions that are no longer pending — so the next pending
-    // on that session re-shows (auto-dissolve already removed the resolved one).
+    // Reset both timers and mutes for sessions that are no longer pending — so a
+    // new pending restarts the debounce, and the next pending re-shows.
     let pending_ids: std::collections::HashSet<&str> =
         pending.iter().map(|s| s.session_id.as_str()).collect();
-    muted.retain(|sid, _| pending_ids.contains(sid.as_str()));
+    state
+        .first_pending_ms
+        .retain(|sid, _| pending_ids.contains(sid.as_str()));
+    state.muted.retain(|sid, _| pending_ids.contains(sid.as_str()));
 
     pending
         .into_iter()
         .filter_map(|s| {
+            // Debounce: stamp first-seen, and hide until it has waited DEBOUNCE_MS.
+            let since = *state
+                .first_pending_ms
+                .entry(s.session_id.clone())
+                .or_insert(now);
+            if now.saturating_sub(since) < DEBOUNCE_MS {
+                return None; // still settling — likely an auto-handled spike
+            }
+
             let sig = signature(s);
-            if muted.get(&s.session_id) == Some(&sig) {
+            if state.muted.get(&s.session_id) == Some(&sig) {
                 return None; // dismissed and still the same pending
             }
+
             Some(NotificationCard {
                 session_id: s.session_id.clone(),
                 agent: s.agent.as_str().to_string(),
@@ -92,9 +125,10 @@ fn build_cards(
         .collect()
 }
 
-/// Recompute the visible cards from current session state + mutes, emit them to
-/// the window, and show/hide the OS window accordingly. Called from the emit
-/// path on every state change, from the dismiss command, and from settings save.
+/// Recompute visible cards from current session state + mutes + debounce, emit
+/// them to the window, and show/hide the OS window. Called from the emit path on
+/// every state change (incl. the ~1s polling loops, which drive the debounce),
+/// from the dismiss command, and from settings save.
 pub fn reconcile(app_handle: &AppHandle) {
     let Some(nav) = app_handle.try_state::<super::NavigatorStore>() else {
         return;
@@ -120,7 +154,7 @@ pub fn reconcile(app_handle: &AppHandle) {
     };
 
     let cards = match notif.0.lock() {
-        Ok(mut muted) => build_cards(&sessions, &mut muted),
+        Ok(mut state) => build_cards(&sessions, &mut state),
         Err(_) => return,
     };
 
@@ -148,8 +182,8 @@ pub fn get_notifications(
         .and_then(|nav| nav.0.lock().ok().map(|state| state.sessions_snapshot()))
         .ok_or_else(|| "navigator unavailable".to_string())?;
     let cards = {
-        let mut muted = store.0.lock().map_err(|err| err.to_string())?;
-        build_cards(&sessions, &mut muted)
+        let mut state = store.0.lock().map_err(|err| err.to_string())?;
+        build_cards(&sessions, &mut state)
     };
     Ok(NotificationPayload { cards })
 }
@@ -161,8 +195,8 @@ pub fn dismiss_notification(
     app_handle: AppHandle,
     store: State<'_, NotificationStore>,
 ) -> Result<(), String> {
-    if let Ok(mut muted) = store.0.lock() {
-        muted.insert(session_id, signature);
+    if let Ok(mut state) = store.0.lock() {
+        state.muted.insert(session_id, signature);
     }
     reconcile(&app_handle);
     Ok(())
@@ -191,8 +225,7 @@ fn ensure_window(app_handle: &AppHandle) {
         .build()
         {
             // Non-activating panel so the Dismiss button receives clicks without
-            // stealing focus from the terminal / Claude (the fix the approval
-            // window lacked).
+            // stealing focus from the terminal / Claude.
             Ok(window) => {
                 if let Err(err) = crate::platform::elevate_panel(&window) {
                     eprintln!("[notification] elevate failed: {err}");

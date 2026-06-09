@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
 use tauri::{App, AppHandle, Emitter, Manager};
 
@@ -45,7 +42,9 @@ pub fn init(app: &mut App) {
     }
 
     app.manage(NavigatorStore(state.clone()));
-    app.manage(notification::NotificationStore(Mutex::new(HashMap::new())));
+    app.manage(notification::NotificationStore(Mutex::new(
+        notification::NotifState::default(),
+    )));
 
     server::start(app.handle().clone(), state.clone());
     reconcile::start(app.handle().clone(), state.clone());
