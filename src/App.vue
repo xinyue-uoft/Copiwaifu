@@ -12,6 +12,7 @@ import {
   MANUAL_UPDATE_WEBSITE_URL,
 } from './updater'
 import MainWindow from './windows/MainWindow.vue'
+import NotificationWindow from './windows/NotificationWindow.vue'
 import SettingsWindow from './windows/SettingsWindow.vue'
 import { APP_LANGUAGE } from './types/agent'
 import type { AppBootstrap, WindowVisibilityPayload } from './types/agent'
@@ -148,8 +149,12 @@ onUnmounted(() => {
     class="shell"
     :class="`shell--${windowLabel}`"
   >
+    <NotificationWindow
+      v-if="windowLabel === 'notification'"
+      :bootstrap="bootstrap"
+    />
     <SettingsWindow
-      v-if="windowLabel === 'settings'"
+      v-else-if="windowLabel === 'settings'"
       :bootstrap="bootstrap"
     />
     <MainWindow
@@ -212,7 +217,8 @@ body {
   color: #203031;
 }
 
-.shell--main {
+.shell--main,
+.shell--notification {
   background: transparent;
   overflow: hidden;
 }

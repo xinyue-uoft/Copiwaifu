@@ -40,6 +40,7 @@ pub fn install_hooks() -> Result<(), String> {
 
 pub fn uninstall_hooks() -> Result<(), String> {
     remove_claude_hooks()?;
+    strip_stale_permission_hook()?;
     remove_copilot_hooks()?;
     remove_codex_hooks()?;
     remove_gemini_hooks()?;
@@ -65,8 +66,61 @@ const CLAUDE_EVENTS: &[&str] = &[
     "PostToolUseFailure",
     "Stop",
     "Notification",
+    // PermissionRequest as a fire-and-forget COMMAND hook: it notifies the pet a
+    // permission is pending (→ needs_attention → notification card) and exits 0
+    // with NO decision, so CC's own prompt — terminal, or Claude Desktop's
+    // --permission-prompt-tool — still handles the actual approval. Claude Desktop
+    // local-agent sessions fire PermissionRequest (not Notification) for
+    // permissions, so this is the signal the notification needs. NOT a blocking
+    // http hook (copiwaifu-hook.js always exits 0 with no decision → no fail-open).
     "PermissionRequest",
 ];
+
+// ── Migration: strip the OLD blocking PermissionRequest *http* hook ─────────────
+// A previous build installed a blocking `PermissionRequest` http hook that parked
+// the socket and made allow/deny decisions. This build keeps only the
+// fire-and-forget command hook (installed via CLAUDE_EVENTS above). Any leftover
+// *http* hook must be removed, else CC POSTs to a route we no longer serve
+// (404 → fail-open). The command observe hook is the signal we want — preserve it.
+
+const CLAUDE_PERMISSION_EVENT: &str = "PermissionRequest";
+const PERMISSION_PATH: &str = "/permission";
+
+/// Matches ONLY the old blocking http permission hook (localhost `/permission`),
+/// never the command observe hook we now install (which must be kept).
+fn is_blocking_permission_http_hook(inner_hook: &Value) -> bool {
+    inner_hook.get("type").and_then(Value::as_str) == Some("http")
+        && inner_hook
+            .get("url")
+            .and_then(Value::as_str)
+            .map(|url| url.contains("127.0.0.1") && url.ends_with(PERMISSION_PATH))
+            .unwrap_or(false)
+}
+
+pub fn strip_stale_permission_hook() -> Result<(), String> {
+    let config = claude_settings_path()?;
+    if !config.exists() {
+        return Ok(());
+    }
+    let mut root = read_json_or_default(&config)?;
+    let Some(hooks_obj) = root.get_mut("hooks").and_then(Value::as_object_mut) else {
+        return Ok(());
+    };
+    if let Some(arr) = hooks_obj
+        .get_mut(CLAUDE_PERMISSION_EVENT)
+        .and_then(Value::as_array_mut)
+    {
+        arr.retain(|outer| {
+            outer
+                .get("hooks")
+                .and_then(Value::as_array)
+                .map(|inner| !inner.iter().any(is_blocking_permission_http_hook))
+                .unwrap_or(true)
+        });
+    }
+    hooks_obj.retain(|_, value| value.as_array().map(|arr| !arr.is_empty()).unwrap_or(true));
+    write_json(&config, &root)
+}
 
 fn install_claude_hooks(script: &Path) -> Result<(), String> {
     let config = claude_settings_path()?;

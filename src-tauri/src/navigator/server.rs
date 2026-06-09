@@ -30,6 +30,7 @@ pub fn start(app_handle: AppHandle, state: Arc<Mutex<NavigatorState>>) {
         if let Ok(mut navigator) = state.lock() {
             navigator.set_server_port(port);
         }
+
         emit_all(
             &app_handle,
             state

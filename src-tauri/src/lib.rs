@@ -1,9 +1,6 @@
 #[cfg(target_os = "macos")]
 use tauri::ActivationPolicy;
 use tauri::Manager;
-#[cfg(target_os = "macos")]
-#[allow(deprecated)]
-use tauri_nspanel::{cocoa::appkit::NSWindowCollectionBehavior, WebviewWindowExt};
 
 #[cfg(target_os = "macos")]
 use std::process::Command;
@@ -13,32 +10,9 @@ mod navigator;
 mod platform;
 mod shell;
 
-#[allow(non_upper_case_globals)]
-#[cfg(target_os = "macos")]
-const NSWindowStyleMaskNonActivatingPanel: i32 = 1 << 7;
-
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
-}
-
-#[cfg(target_os = "macos")]
-#[allow(deprecated)]
-fn elevate_desktop_pet_window(window: &tauri::WebviewWindow) -> tauri::Result<()> {
-    let panel = window.to_panel().unwrap();
-
-    panel.set_style_mask(NSWindowStyleMaskNonActivatingPanel);
-
-    panel.set_collection_behaviour(
-        NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces
-            | NSWindowCollectionBehavior::NSWindowCollectionBehaviorStationary
-            | NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary,
-    );
-
-    panel.set_level(1000); // NSScreenSaverWindowLevel
-    panel.order_front_regardless();
-
-    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -93,11 +67,7 @@ pub fn run() {
                 .or_else(|| app.webview_windows().into_values().next())
                 .expect("failed to find the primary webview window");
 
-            #[cfg(target_os = "macos")]
-            elevate_desktop_pet_window(&window)?;
-
-            #[cfg(not(target_os = "macos"))]
-            window.set_always_on_top(true)?;
+            platform::elevate_panel(&window)?;
 
             Ok(())
         })
@@ -106,6 +76,8 @@ pub fn run() {
             greet,
             navigator::commands::get_agent_status,
             navigator::commands::get_navigator_sessions,
+            navigator::notification::get_notifications,
+            navigator::notification::dismiss_notification,
             ai_talk::generate_ai_talk,
             navigator::commands::uninstall_hooks,
             shell::commands::get_app_bootstrap,

@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use tauri::{App, AppHandle, Emitter, Manager};
 
@@ -7,6 +10,7 @@ pub mod commands;
 pub mod events;
 mod hook_helpers;
 pub mod hook_installer;
+pub mod notification;
 mod presentation;
 mod providers;
 mod reconcile;
@@ -29,14 +33,23 @@ pub fn init(app: &mut App) {
         session_recovery::recover(&mut navigator);
     }
 
-    app.manage(NavigatorStore(state.clone()));
-    server::start(app.handle().clone(), state.clone());
-    reconcile::start(app.handle().clone(), state.clone());
-    agent::start_cleanup_loop(app.handle().clone(), state);
-
     if let Err(err) = hook_installer::install_hooks() {
         eprintln!("navigator hook installation failed: {err}");
     }
+    // Migration: strip any leftover blocking PermissionRequest http hook from a
+    // previous build. If left behind, CC would POST to a route this build no
+    // longer serves (404 → fail-open auto-allow). The notification feature
+    // installs NO PermissionRequest hook — it observes the Notification event.
+    if let Err(err) = hook_installer::strip_stale_permission_hook() {
+        eprintln!("navigator stale permission-hook cleanup failed: {err}");
+    }
+
+    app.manage(NavigatorStore(state.clone()));
+    app.manage(notification::NotificationStore(Mutex::new(HashMap::new())));
+
+    server::start(app.handle().clone(), state.clone());
+    reconcile::start(app.handle().clone(), state.clone());
+    agent::start_cleanup_loop(app.handle().clone(), state);
 }
 
 pub fn emit_all(app_handle: &AppHandle, emissions: Vec<NavigatorEmission>) {
@@ -50,4 +63,7 @@ pub fn emit_all(app_handle: &AppHandle, emissions: Vec<NavigatorEmission>) {
             }
         }
     }
+    // Keep the passive notification window in sync with the latest session state:
+    // show pending cards, auto-dissolve resolved ones, hide when none remain.
+    notification::reconcile(app_handle);
 }

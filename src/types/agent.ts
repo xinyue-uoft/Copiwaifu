@@ -81,6 +81,7 @@ export interface AppSettings {
   name: string
   language: AppLanguage
   autoStart: boolean
+  permissionApprovalEnabled: boolean
   modelDirectory: string | null
   windowSize: WindowSizePreset
   actionGroupBindings: Record<TAgentState, string | null>
@@ -275,4 +276,18 @@ export function createDefaultAiTalkSettings(): AiTalkSettings {
     headers: {},
     providerProfiles: {},
   }
+}
+
+export interface NotificationCard {
+  session_id: string
+  agent: string
+  tool_name?: string
+  summary?: string
+  working_directory?: string
+  session_title?: string
+  signature: string
+}
+
+export interface NotificationPayload {
+  cards: NotificationCard[]
 }

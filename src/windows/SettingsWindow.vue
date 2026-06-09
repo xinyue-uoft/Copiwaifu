@@ -143,6 +143,7 @@ function createFormState(settings: AppSettings): AppSettings {
     name: settings.name,
     language: settings.language,
     autoStart: settings.autoStart,
+    permissionApprovalEnabled: settings.permissionApprovalEnabled,
     modelDirectory: settings.modelDirectory,
     windowSize: settings.windowSize,
     actionGroupBindings: {
@@ -160,6 +161,7 @@ function applySettings(settings: AppSettings) {
     form.name = next.name
     form.language = next.language
     form.autoStart = next.autoStart
+    form.permissionApprovalEnabled = next.permissionApprovalEnabled
     form.modelDirectory = next.modelDirectory
     form.windowSize = next.windowSize
     form.aiTalk.enabled = next.aiTalk.enabled
@@ -525,6 +527,17 @@ function sanitizeAiTalkHeaders(headers: Record<string, string>) {
         </span>
         <input
           v-model="form.autoStart"
+          type="checkbox"
+        >
+      </label>
+
+      <label class="field field--switch">
+        <span>
+          <strong>Show pending-permission notifications</strong>
+          <small>Pop a passive card when a Claude session is waiting for a permission decision. Resolve it in your terminal / Claude — the pet only notifies.</small>
+        </span>
+        <input
+          v-model="form.permissionApprovalEnabled"
           type="checkbox"
         >
       </label>

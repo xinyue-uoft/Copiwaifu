@@ -28,3 +28,36 @@ pub fn primary_port_file() -> Result<PathBuf, String> {
 pub fn fallback_port_file() -> PathBuf {
     std::env::temp_dir().join("copiwaifu-port")
 }
+
+// ── Window elevation (shared by the pet window and the notification window) ──────
+// NSWindowStyleMaskNonActivatingPanel
+#[cfg(target_os = "macos")]
+#[allow(non_upper_case_globals)]
+const NS_NON_ACTIVATING_PANEL: i32 = 1 << 7;
+
+/// Turn a window into a non-activating floating panel: it floats above other
+/// apps, joins all Spaces, and — crucially — receives clicks WITHOUT stealing
+/// focus from the terminal / Claude. Used for both the desktop pet and the
+/// notification window (the latter's Dismiss button needs the clicks).
+#[cfg(target_os = "macos")]
+#[allow(deprecated)]
+pub fn elevate_panel(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    use tauri_nspanel::{cocoa::appkit::NSWindowCollectionBehavior, WebviewWindowExt};
+
+    let panel = window.to_panel().unwrap();
+
+    panel.set_style_mask(NS_NON_ACTIVATING_PANEL);
+    panel.set_collection_behaviour(
+        NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces
+            | NSWindowCollectionBehavior::NSWindowCollectionBehaviorStationary
+            | NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary,
+    );
+    panel.set_level(1000); // NSScreenSaverWindowLevel
+    panel.order_front_regardless();
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn elevate_panel(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    window.set_always_on_top(true)
+}

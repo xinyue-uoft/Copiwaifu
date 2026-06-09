@@ -124,6 +124,7 @@ pub struct AppSettings {
     pub name: String,
     pub language: AppLanguage,
     pub auto_start: bool,
+    pub permission_approval_enabled: bool,
     pub model_directory: Option<String>,
     pub window_size: WindowSizePreset,
     pub action_group_bindings: BTreeMap<String, Option<String>>,
@@ -136,6 +137,7 @@ impl Default for AppSettings {
             name: "Yulia".to_string(),
             language: AppLanguage::English,
             auto_start: false,
+            permission_approval_enabled: true,
             model_directory: None,
             window_size: WindowSizePreset::Medium,
             action_group_bindings: default_action_group_bindings(),
@@ -191,6 +193,7 @@ struct PersistedAppSettings {
     name: Option<String>,
     language: Option<AppLanguage>,
     auto_start: Option<bool>,
+    permission_approval_enabled: Option<bool>,
     model_directory: Option<String>,
     window_size: Option<WindowSizePreset>,
     action_group_bindings: Option<BTreeMap<String, Option<String>>>,
@@ -388,6 +391,9 @@ fn save_settings_inner(
 
     update_tray_menu(app_handle).map_err(|err| err.to_string())?;
     emit_settings_updated(app_handle, shell, navigator)?;
+    // Apply the notification toggle immediately (show/hide without waiting for
+    // the next agent event).
+    crate::navigator::notification::reconcile(app_handle);
 
     let shell_state = shell.0.lock().map_err(|err| err.to_string())?;
     Ok(build_bootstrap(app_handle, &shell_state, navigator))
@@ -454,6 +460,9 @@ fn merge_persisted_settings(persisted: PersistedAppSettings) -> AppSettings {
     }
     if let Some(auto_start) = persisted.auto_start {
         settings.auto_start = auto_start;
+    }
+    if let Some(permission_approval_enabled) = persisted.permission_approval_enabled {
+        settings.permission_approval_enabled = permission_approval_enabled;
     }
     if persisted.model_directory.is_some() {
         settings.model_directory = persisted.model_directory;
