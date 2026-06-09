@@ -2,27 +2,29 @@
 //
 // PERMISSION NOTIFICATIONS
 // Shows a card per Claude Code session that has been waiting for a permission
-// decision for more than DEBOUNCE_MS. The debounce is the crux: every tool
-// call briefly flips a session into `needs_attention` and back (especially
-// auto-mode agent sessions), so without it the pet would flash a card — and
-// churn its summary — on every command. Only a session that *stays* waiting
-// (a genuine prompt the user must act on) survives the debounce.
+// decision for more than NOTIF_DEBOUNCE_MS. Two mechanisms prevent re-showing:
 //
-// Makes NO decision — the user resolves in their terminal / Claude. Cards
-// auto-dissolve when the reducer clears `needs_attention`; a card can be
-// locally Dismissed (muted) without touching CC.
+// • Debounce (2.5s): filters sub-second auto-mode tool-call spikes that briefly
+//   flip needs_attention without ever waiting for user input.
+//
+// • Session-scoped seen buffer (`shown_this_session`): a HashSet<signature>
+//   that only grows — once a notification's content signature is inserted
+//   (on Dismiss), it is NEVER shown again in this copiwaifu session. This
+//   replaces the previous signature-based mute map, which was unreliable
+//   because:
+//     - intermediate events (PreToolUse, Notification…) can momentarily flip
+//       needs_attention=false for one reconcile tick, causing retain() to drop
+//       the mute;
+//     - the pending_ids retain cleared mutes during any brief state transition;
+//     - each clear triggered another card → window.show() → keyboard blocked.
+//
+//   With the seen buffer there is no retain/clear path — the dismiss is final.
+//   A genuinely different prompt on the same session has a different signature
+//   (different tool_name or summary) and passes through normally.
 //
 // COMPLETION BADGES
-// Shows a small "完工啦！" chip at the bottom of the main pet window for up
-// to COMPLETION_BADGE_DISPLAY_MS after a session settles into Complete. The
-// same 3-second debounce filters spurious Complete spikes from auto-mode
-// sub-turns — only a session that stays Complete (genuinely waiting for the
-// user's next input) gets a badge. Chips stack per-session and can be
-// dismissed early. Each badge carries the CC completion message so the user
-// can glance what just finished.
-//
-// Both features share NotifState (single mutex) and the reconcile() path
-// driven by the ~1s polling loop in reconcile.rs.
+// Shows a "完工啦！" chip at the bottom of the pet window for up to 5 minutes
+// after a session settles into Complete. Same 3s debounce. Stacks per-session.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -46,10 +48,7 @@ const NOTIF_DEBOUNCE_MS: u64 = 2500;
 // ── Completion badges ─────────────────────────────────────────────────────────
 
 pub const COMPLETION_CHANGED_EVENT: &str = "completion:changed";
-/// A session must remain in Complete state for this long before we show a
-/// badge — prevents spurious flashes from rapid auto-mode sub-turn cycling.
 const COMPLETE_DEBOUNCE_MS: u64 = 3_000;
-/// How long a completion badge stays visible before auto-dissolving.
 const COMPLETION_BADGE_DISPLAY_MS: u64 = 300_000; // 5 min
 
 // ── Shared state ──────────────────────────────────────────────────────────────
@@ -58,18 +57,22 @@ pub struct NotificationStore(pub Mutex<NotifState>);
 
 #[derive(Default)]
 pub struct NotifState {
-    // -- permission notification maps --
-    /// session_id → dismissed pending-signature (Dismiss mute).
-    muted: HashMap<String, String>,
-    /// session_id → epoch-ms when first observed pending (notification debounce).
+    // -- permission notification state --
+
+    /// session_id → epoch-ms when it was first observed pending (debounce timer).
+    /// Cleared when the session leaves `needs_attention` so a genuine new
+    /// pending on the same session re-starts the 2.5s clock.
     first_pending_ms: HashMap<String, u64>,
 
-    // -- completion badge maps --
-    /// session_id → epoch-ms when first observed Complete (completion debounce).
+    /// Global seen buffer — content signatures dismissed in this copiwaifu
+    /// session. Entries are NEVER removed. A dismissed notification can never
+    /// re-appear even if needs_attention cycles back to true. A new prompt on
+    /// the same session has a different signature and passes through normally.
+    shown_this_session: HashSet<String>,
+
+    // -- completion badge state --
     complete_first_seen: HashMap<String, u64>,
-    /// session_id → entry for sessions promoted to badge-visible.
     complete_promoted: HashMap<String, CompletionEntry>,
-    /// session_ids whose badge was manually dismissed (cleared when session exits Complete).
     complete_dismissed: HashSet<String>,
 }
 
@@ -79,7 +82,7 @@ struct CompletionEntry {
     summary: Option<String>,
 }
 
-// ── Wire types (serialised to frontend) ──────────────────────────────────────
+// ── Wire types ────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Serialize)]
 pub struct NotificationCard {
@@ -93,6 +96,7 @@ pub struct NotificationCard {
     pub working_directory: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_title: Option<String>,
+    /// Content fingerprint sent to the frontend so Dismiss can echo it back.
     pub signature: String,
 }
 
@@ -106,7 +110,6 @@ pub struct CompletionBadge {
     pub session_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_title: Option<String>,
-    /// Last meaningful summary from CC — shown as the completion message.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
     pub promoted_at_ms: u64,
@@ -126,8 +129,8 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Distinguishes one pending prompt from the next on the same session, so a
-/// Dismiss only mutes the specific request, not all future ones.
+/// Content fingerprint for a pending session — captures what the user
+/// actually sees, so Dismiss is scoped to this specific prompt.
 fn signature(session: &NavigatorSessionPayload) -> String {
     format!(
         "{}|{}|{}",
@@ -147,53 +150,33 @@ fn build_cards(sessions: &NavigatorSessionsPayload, state: &mut NotifState) -> V
         .filter(|s| s.needs_attention == Some(true))
         .collect();
 
-    // Debounce timers: reset when a session leaves pending, so a genuinely new
-    // pending re-starts the 2.5s clock.
+    // Reset debounce timers for sessions that left pending — so a genuine new
+    // pending on the same session re-waits the full 2.5s.
     let pending_ids: HashSet<&str> = pending.iter().map(|s| s.session_id.as_str()).collect();
     state.first_pending_ms.retain(|sid, _| pending_ids.contains(sid.as_str()));
 
-    // *** Mutes must survive brief needs_attention fluctuations. ***
-    // Intermediate events (PreToolUse, Notification, etc.) can momentarily flip a
-    // session out of `needs_attention` for one reconcile tick, then back. If we
-    // retain mutes only while the session is in `pending_ids`, a dismiss is
-    // silently lost during that window and the card immediately re-appears —
-    // cycling every second and blocking keyboard input (repeated orderFront).
-    //
-    // Fix: retain mutes for any session still present in the navigator state at
-    // all. The mute is tied to a content signature, so a genuinely new pending
-    // with different content (different tool / summary) naturally bypasses it.
-    // Only when the session fully exits the navigator (agent process closed) do
-    // we release the mute.
-    let all_session_ids: HashSet<&str> =
-        sessions.sessions.iter().map(|s| s.session_id.as_str()).collect();
-    let before = state.muted.len();
-    state.muted.retain(|sid, _| all_session_ids.contains(sid.as_str()));
-    let dropped = before.saturating_sub(state.muted.len());
-    if dropped > 0 {
-        eprintln!("[notif] released {dropped} mute(s) for fully-closed sessions");
-    }
+    // `shown_this_session` is intentionally NOT pruned here — it is permanent
+    // for the lifetime of this copiwaifu process. See module-level comment.
 
     pending
         .into_iter()
         .filter_map(|s| {
-            // Debounce: stamp first-seen; hide until it has waited NOTIF_DEBOUNCE_MS.
+            // Debounce: stamp first-seen; hide until the session has stayed
+            // pending for NOTIF_DEBOUNCE_MS.
             let since = *state
                 .first_pending_ms
                 .entry(s.session_id.clone())
                 .or_insert(now);
             if now.saturating_sub(since) < NOTIF_DEBOUNCE_MS {
-                return None; // still settling — likely an auto-handled spike
+                return None; // still settling
             }
 
             let sig = signature(s);
-            if state.muted.get(&s.session_id) == Some(&sig) {
-                return None; // dismissed, same pending — stay hidden
-            }
-            // If a mute exists but the signature changed, the user is seeing a
-            // genuinely new prompt — clear the stale mute so the card shows.
-            if state.muted.contains_key(&s.session_id) {
-                state.muted.remove(&s.session_id);
-                eprintln!("[notif] sig changed for {} — cleared stale mute", &s.session_id[..8.min(s.session_id.len())]);
+
+            // Seen-buffer dedup: if this exact content has been dismissed in
+            // this session, never show it again.
+            if state.shown_this_session.contains(&sig) {
+                return None;
             }
 
             Some(NotificationCard {
@@ -215,7 +198,6 @@ fn build_completion_badges(
 ) -> Vec<CompletionBadge> {
     let now = now_ms();
 
-    // Sessions currently settled into Complete (not still waiting for attention).
     let complete_ids: HashSet<&str> = sessions
         .sessions
         .iter()
@@ -223,14 +205,10 @@ fn build_completion_badges(
         .map(|s| s.session_id.as_str())
         .collect();
 
-    // Prune all completion maps for sessions that left Complete state.
-    // This also clears `complete_dismissed` — so if the user starts a new task
-    // and it completes again, they get a fresh badge.
     state.complete_first_seen.retain(|id, _| complete_ids.contains(id.as_str()));
     state.complete_promoted.retain(|id, _| complete_ids.contains(id.as_str()));
     state.complete_dismissed.retain(|id| complete_ids.contains(id.as_str()));
 
-    // Stamp and promote each Complete session.
     for session in sessions
         .sessions
         .iter()
@@ -241,7 +219,6 @@ fn build_completion_badges(
             .entry(session.session_id.clone())
             .or_insert(now);
 
-        // Promote only once per Complete stint, after the debounce.
         if now.saturating_sub(since) >= COMPLETE_DEBOUNCE_MS
             && !state.complete_promoted.contains_key(&session.session_id)
             && !state.complete_dismissed.contains(&session.session_id)
@@ -257,7 +234,6 @@ fn build_completion_badges(
         }
     }
 
-    // Collect visible badges: promoted, not dismissed, within the 5-min window.
     let mut badges: Vec<CompletionBadge> = state
         .complete_promoted
         .iter()
@@ -273,18 +249,12 @@ fn build_completion_badges(
         })
         .collect();
 
-    // Stable order: newest first.
     badges.sort_by(|a, b| b.promoted_at_ms.cmp(&a.promoted_at_ms));
     badges
 }
 
 // ── Core reconcile ────────────────────────────────────────────────────────────
 
-/// Recompute visible notification cards and completion badges from current
-/// session state. Emits both `notification:changed` and `completion:changed`,
-/// then shows/hides the notification OS window. Called from the emit path on
-/// every state change (incl. the ~1s polling loops, which drive both
-/// debounces), from dismiss commands, and from settings save.
 pub fn reconcile(app_handle: &AppHandle) {
     let Some(nav) = app_handle.try_state::<super::NavigatorStore>() else {
         return;
@@ -309,7 +279,6 @@ pub fn reconcile(app_handle: &AppHandle) {
         Err(_) => return,
     };
 
-    // Acquire the notif lock once — build both outputs in the same critical section.
     let (cards, badges) = match notif.0.lock() {
         Ok(mut state) => {
             let cards = build_cards(&sessions, &mut state);
@@ -319,15 +288,8 @@ pub fn reconcile(app_handle: &AppHandle) {
         Err(_) => return,
     };
 
-    let _ = app_handle.emit(
-        NOTIFICATION_CHANGED_EVENT,
-        NotificationPayload { cards: cards.clone() },
-    );
-
-    let _ = app_handle.emit(
-        COMPLETION_CHANGED_EVENT,
-        CompletionPayload { badges },
-    );
+    let _ = app_handle.emit(NOTIFICATION_CHANGED_EVENT, NotificationPayload { cards: cards.clone() });
+    let _ = app_handle.emit(COMPLETION_CHANGED_EVENT, CompletionPayload { badges });
 
     if enabled && !cards.is_empty() {
         ensure_window(app_handle);
@@ -361,8 +323,11 @@ pub fn dismiss_notification(
     app_handle: AppHandle,
     store: State<'_, NotificationStore>,
 ) -> Result<(), String> {
+    eprintln!("[notif] dismiss: session={} sig_len={}", &session_id[..8.min(session_id.len())], signature.len());
     if let Ok(mut state) = store.0.lock() {
-        state.muted.insert(session_id, signature);
+        // Record in the permanent seen buffer — this sig will never generate a
+        // card again in this copiwaifu session, regardless of needs_attention.
+        state.shown_this_session.insert(signature);
     }
     reconcile(&app_handle);
     Ok(())
@@ -404,11 +369,9 @@ fn ensure_window(app_handle: &AppHandle) {
     let app = app_handle.clone();
     let _ = app_handle.run_on_main_thread(move || {
         if let Some(window) = app.get_webview_window(NOTIFICATION_WINDOW_LABEL) {
-            // Guard: only call orderFront when the window is actually hidden.
-            // Repeatedly calling show() / orderFront: on an already-visible
-            // NSNonActivatingPanel causes macOS to re-route keyboard events on
-            // every reconcile tick (~1s), producing the "keyboard blocked /
-            // constantly refocusing" symptom the user observed.
+            // Only call orderFront when truly hidden — repeated orderFront on an
+            // NSNonActivatingPanel re-routes macOS keyboard events on each call,
+            // producing the "keyboard blocked" symptom.
             if !window.is_visible().unwrap_or(false) {
                 let _ = window.show();
             }
@@ -429,8 +392,6 @@ fn ensure_window(app_handle: &AppHandle) {
         .focused(false)
         .build()
         {
-            // Non-activating panel so the Dismiss button receives clicks without
-            // stealing focus from the terminal / Claude.
             Ok(window) => {
                 if let Err(err) = crate::platform::elevate_panel(&window) {
                     eprintln!("[notification] elevate failed: {err}");
