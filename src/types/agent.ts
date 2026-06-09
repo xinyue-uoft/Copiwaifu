@@ -291,3 +291,15 @@ export interface NotificationCard {
 export interface NotificationPayload {
   cards: NotificationCard[]
 }
+
+export interface CompletionBadge {
+  session_id: string
+  session_title?: string
+  /// Last meaningful summary from CC — shown as the completion message.
+  summary?: string
+  promoted_at_ms: number
+}
+
+export interface CompletionPayload {
+  badges: CompletionBadge[]
+}

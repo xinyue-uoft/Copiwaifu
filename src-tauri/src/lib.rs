@@ -78,6 +78,8 @@ pub fn run() {
             navigator::commands::get_navigator_sessions,
             navigator::notification::get_notifications,
             navigator::notification::dismiss_notification,
+            navigator::notification::get_completions,
+            navigator::notification::dismiss_completion,
             ai_talk::generate_ai_talk,
             navigator::commands::uninstall_hooks,
             shell::commands::get_app_bootstrap,

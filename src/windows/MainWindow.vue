@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import type { UnlistenFn } from '@tauri-apps/api/event'
-import type { AgentType, AppBootstrap, TAgentState } from '../types/agent'
+import type { AgentType, AppBootstrap, CompletionBadge, CompletionPayload, TAgentState } from '../types/agent'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import CompletionToast from '../components/CompletionToast.vue'
 import PetContextMenu from '../components/PetContextMenu.vue'
 import SpeechBubble from '../components/SpeechBubble.vue'
 import { useAgentState } from '../composables/useAgentState'
@@ -28,6 +29,29 @@ let aiTalkRequestToken = 0
 let lastAiTalkOpeningFire = ''
 let unlistenAiTalkDebug: UnlistenFn | null = null
 let aiTalkDebugListenerDisposed = false
+
+// -- Completion badges --
+const completionBadges = ref<CompletionBadge[]>([])
+let unlistenCompletion: UnlistenFn | null = null
+
+async function loadCompletions() {
+  try {
+    const payload = await invoke<CompletionPayload>('get_completions')
+    completionBadges.value = payload.badges
+  }
+  catch (error) {
+    console.warn('[completion] failed to fetch initial badges', error)
+  }
+}
+
+async function dismissCompletion(sessionId: string) {
+  try {
+    await invoke('dismiss_completion', { sessionId })
+  }
+  catch (error) {
+    console.warn('[completion] failed to dismiss badge', error)
+  }
+}
 
 const MENU_WIDTH = 176
 const MENU_HEIGHT = 196
@@ -269,6 +293,17 @@ onMounted(() => {
   window.addEventListener('click', closeMenu)
   window.addEventListener('blur', closeMenu)
   window.addEventListener('keydown', handleWindowKeydown)
+
+  // Completion badges: load initial state and subscribe to live updates.
+  void loadCompletions()
+  void listen<CompletionPayload>('completion:changed', (event) => {
+    completionBadges.value = event.payload.badges
+  }).then((unlisten) => {
+    unlistenCompletion = unlisten
+  }).catch((error) => {
+    console.warn('[completion] failed to listen for completion events', error)
+  })
+
   void listen<AiTalkDebugPayload>('ai-talk:debug', (event) => {
     console.log('[AI Talk debug]', event.payload.stage, event.payload.data)
   })
@@ -289,6 +324,10 @@ onUnmounted(() => {
   if (unlistenAiTalkDebug) {
     void unlistenAiTalkDebug()
     unlistenAiTalkDebug = null
+  }
+  if (unlistenCompletion) {
+    void unlistenCompletion()
+    unlistenCompletion = null
   }
   if (idleGreetingTimer) {
     clearInterval(idleGreetingTimer)
@@ -407,6 +446,25 @@ watch(
         ref="canvasRef"
         data-tauri-drag-region
       />
+
+      <!-- Completion badges: slide up from the bottom of the pet area -->
+      <div
+        v-if="completionBadges.length > 0"
+        class="completion-stack"
+      >
+        <transition-group
+          name="toast"
+          tag="div"
+          class="completion-inner"
+        >
+          <CompletionToast
+            v-for="badge in completionBadges"
+            :key="badge.session_id"
+            :badge="badge"
+            @dismiss="dismissCompletion"
+          />
+        </transition-group>
+      </div>
     </section>
 
     <PetContextMenu
@@ -488,5 +546,37 @@ watch(
   height: 100%;
   cursor: move;
   z-index: 1;
+}
+
+/* Completion badge stack — floats above the pet canvas, anchored to the bottom */
+.completion-stack {
+  position: absolute;
+  bottom: 14px;
+  left: 12px;
+  right: 12px;
+  z-index: 10;
+  pointer-events: none; /* clicks fall through to canvas by default */
+}
+
+.completion-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Slide-up entrance / fade-out exit */
+.toast-enter-active,
+.toast-leave-active {
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+
+.toast-enter-from {
+  opacity: 0;
+  transform: translateY(10px);
+}
+
+.toast-leave-to {
+  opacity: 0;
+  transform: translateY(6px);
 }
 </style>
