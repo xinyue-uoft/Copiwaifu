@@ -147,11 +147,31 @@ fn build_cards(sessions: &NavigatorSessionsPayload, state: &mut NotifState) -> V
         .filter(|s| s.needs_attention == Some(true))
         .collect();
 
-    // Reset both timers and mutes for sessions that are no longer pending — so a
-    // new pending restarts the debounce, and the next pending re-shows.
+    // Debounce timers: reset when a session leaves pending, so a genuinely new
+    // pending re-starts the 2.5s clock.
     let pending_ids: HashSet<&str> = pending.iter().map(|s| s.session_id.as_str()).collect();
     state.first_pending_ms.retain(|sid, _| pending_ids.contains(sid.as_str()));
-    state.muted.retain(|sid, _| pending_ids.contains(sid.as_str()));
+
+    // *** Mutes must survive brief needs_attention fluctuations. ***
+    // Intermediate events (PreToolUse, Notification, etc.) can momentarily flip a
+    // session out of `needs_attention` for one reconcile tick, then back. If we
+    // retain mutes only while the session is in `pending_ids`, a dismiss is
+    // silently lost during that window and the card immediately re-appears —
+    // cycling every second and blocking keyboard input (repeated orderFront).
+    //
+    // Fix: retain mutes for any session still present in the navigator state at
+    // all. The mute is tied to a content signature, so a genuinely new pending
+    // with different content (different tool / summary) naturally bypasses it.
+    // Only when the session fully exits the navigator (agent process closed) do
+    // we release the mute.
+    let all_session_ids: HashSet<&str> =
+        sessions.sessions.iter().map(|s| s.session_id.as_str()).collect();
+    let before = state.muted.len();
+    state.muted.retain(|sid, _| all_session_ids.contains(sid.as_str()));
+    let dropped = before.saturating_sub(state.muted.len());
+    if dropped > 0 {
+        eprintln!("[notif] released {dropped} mute(s) for fully-closed sessions");
+    }
 
     pending
         .into_iter()
@@ -167,7 +187,13 @@ fn build_cards(sessions: &NavigatorSessionsPayload, state: &mut NotifState) -> V
 
             let sig = signature(s);
             if state.muted.get(&s.session_id) == Some(&sig) {
-                return None; // dismissed and still the same pending
+                return None; // dismissed, same pending — stay hidden
+            }
+            // If a mute exists but the signature changed, the user is seeing a
+            // genuinely new prompt — clear the stale mute so the card shows.
+            if state.muted.contains_key(&s.session_id) {
+                state.muted.remove(&s.session_id);
+                eprintln!("[notif] sig changed for {} — cleared stale mute", &s.session_id[..8.min(s.session_id.len())]);
             }
 
             Some(NotificationCard {
@@ -378,7 +404,14 @@ fn ensure_window(app_handle: &AppHandle) {
     let app = app_handle.clone();
     let _ = app_handle.run_on_main_thread(move || {
         if let Some(window) = app.get_webview_window(NOTIFICATION_WINDOW_LABEL) {
-            let _ = window.show();
+            // Guard: only call orderFront when the window is actually hidden.
+            // Repeatedly calling show() / orderFront: on an already-visible
+            // NSNonActivatingPanel causes macOS to re-route keyboard events on
+            // every reconcile tick (~1s), producing the "keyboard blocked /
+            // constantly refocusing" symptom the user observed.
+            if !window.is_visible().unwrap_or(false) {
+                let _ = window.show();
+            }
             return;
         }
         match WebviewWindowBuilder::new(
