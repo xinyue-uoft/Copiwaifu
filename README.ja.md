@@ -48,7 +48,7 @@ xattr -dr com.apple.quarantine /Applications/copiwaifu.app
 
 - Claude Code: `~/.claude/settings.json`
 - GitHub Copilot: `~/.config/github-copilot/config.json`
-- Codex: `~/.codex/config.toml`
+- Codex: `~/.codex/hooks.json`
 - Gemini CLI: `~/.gemini/settings.json`
 - OpenCode: `~/.config/opencode/opencode.json`
 
@@ -61,7 +61,7 @@ Copiwaifu は macOS のネイティブなデスクトップペット向けウィ
 - macOS: 引き続き `tauri-nspanel`、Dock 非表示、全スペース表示などの macOS 専用機能を使います。
 - Windows: macOS 専用プラグインは読み込まず、Tauri 標準の透明・枠なし・常時前面ウィンドウ、システムトレイ、自動起動プラグインを使います。
 - hook と実行時ファイルはユーザーディレクトリ配下の `.copiwaifu` を優先し、予備のポートファイルは固定の `/tmp` ではなくシステム一時ディレクトリへ書き込みます。
-- Codex `notify` 設定では、Windows のバックスラッシュを TOML 文字列として正しくエスケープします。
+- Codex lifecycle hooks は `~/.codex/hooks.json` にインストールされます。インストール後は Codex の `/hooks` で確認して信頼してください。
 
 Windows の保守メモは [docs/WINDOWS.zh-CN.md](docs/WINDOWS.zh-CN.md) にあります。
 

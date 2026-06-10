@@ -47,7 +47,7 @@ The hook installer currently integrates with:
 
 - Claude Code via `~/.claude/settings.json`
 - GitHub Copilot via `~/.config/github-copilot/config.json`
-- Codex via `~/.codex/config.toml`
+- Codex via `~/.codex/hooks.json`
 - Gemini CLI via `~/.gemini/settings.json`
 - OpenCode via `~/.config/opencode/opencode.json`
 
@@ -60,7 +60,7 @@ Copiwaifu keeps the native macOS desktop-pet window behavior while adding mainta
 - macOS: continues to use `tauri-nspanel`, hidden Dock behavior, and all-space window behavior.
 - Windows: does not load macOS-only plugins and uses Tauri's standard transparent, borderless, always-on-top window, system tray, and autostart plugin.
 - Hook and runtime files prefer the user's `.copiwaifu` directory, and fallback port files are written to the system temp directory instead of a hardcoded `/tmp`.
-- Codex `notify` configuration escapes Windows backslash paths as TOML strings.
+- Codex lifecycle hooks are installed through `~/.codex/hooks.json`; after install, review and trust them with `/hooks` in Codex.
 
 Windows maintenance notes are available in [docs/WINDOWS.zh-CN.md](docs/WINDOWS.zh-CN.md).
 

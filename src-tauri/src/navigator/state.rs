@@ -13,7 +13,7 @@ use super::{
     presentation, reducer, session_store,
 };
 
-/// A session waiting on the user is exempt from the normal 60s TTL (CC sends
+    /// A session waiting on the user is exempt from the normal 60s TTL (AI tools send
 /// no events while its dialog is open) — but never beyond this hard cap.
 const ATTENTION_MAX_HOLD: Duration = Duration::from_secs(30 * 60);
 
@@ -218,7 +218,7 @@ impl NavigatorState {
         self.sessions.retain(|_, session| {
             let age = now.duration_since(session.updated_at);
             if session.needs_attention == Some(true) {
-                // CC is silent while its permission/question dialog is open —
+                // The AI tool is silent while its permission/question dialog is open —
                 // keep the session (and its notification card) alive.
                 age < ATTENTION_MAX_HOLD
             } else {
@@ -377,6 +377,25 @@ mod tests {
         assert!(state
             .claim_ai_talk_context(AgentType::ClaudeCode, "same-session", AgentState::Complete)
             .is_some());
+    }
+
+    #[test]
+    fn codex_ai_talk_claim_uses_codex_agent_key() {
+        let mut state = NavigatorState::new();
+
+        state.apply_event(turn_start_event(AgentType::Codex, "codex-session", "implement hooks"));
+        state.apply_event(event(
+            AgentType::Codex,
+            "codex-session",
+            EventType::Complete,
+        ));
+
+        assert!(state
+            .claim_ai_talk_context(AgentType::Codex, "codex-session", AgentState::Complete)
+            .is_some());
+        assert!(state
+            .claim_ai_talk_context(AgentType::ClaudeCode, "codex-session", AgentState::Complete)
+            .is_none());
     }
 
     #[test]

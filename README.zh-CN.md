@@ -48,7 +48,7 @@ xattr -dr com.apple.quarantine /Applications/copiwaifu.app
 
 - Claude Code：`~/.claude/settings.json`
 - GitHub Copilot：`~/.config/github-copilot/config.json`
-- Codex：`~/.codex/config.toml`
+- Codex：`~/.codex/hooks.json`
 - Gemini CLI：`~/.gemini/settings.json`
 - OpenCode：`~/.config/opencode/opencode.json`
 
@@ -61,7 +61,7 @@ Copiwaifu 现在保留 macOS 的原生桌宠窗口增强，同时补齐 Windows 
 - macOS：继续使用 `tauri-nspanel`、隐藏 Dock、全空间显示等 macOS 专有能力。
 - Windows：不加载 macOS 专用插件，使用 Tauri 标准透明无边框置顶窗口、系统托盘和开机自启插件。
 - hooks 和运行时文件会优先写入用户目录下的 `.copiwaifu`，端口兜底文件会写入系统临时目录，避免硬编码 `/tmp`。
-- Codex `notify` 配置会按 TOML 字符串转义 Windows 反斜杠路径。
+- Codex lifecycle hooks 会写入 `~/.codex/hooks.json`；安装后需要在 Codex 里用 `/hooks` 审查并信任。
 
 Windows 维护说明见 [docs/WINDOWS.zh-CN.md](docs/WINDOWS.zh-CN.md)。
 

@@ -2,18 +2,19 @@ use serde::{Deserialize, Serialize};
 
 use super::providers;
 
-/// copiwaifu only integrates Claude Code. The enum is kept (single variant)
-/// so wire formats and session files stay explicit about their source.
+/// Wire-visible AI tool source for hook events and session files.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AgentType {
     ClaudeCode,
+    Codex,
 }
 
 impl AgentType {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::ClaudeCode => "claude-code",
+            Self::Codex => "codex",
         }
     }
 }
@@ -22,9 +23,9 @@ impl AgentType {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttentionKind {
-    /// CC is asking for a tool permission (PermissionRequest / Notification).
+    /// The AI tool is asking for a tool permission.
     Permission,
-    /// CC is asking the user to pick something (AskUserQuestion / ExitPlanMode).
+    /// The AI tool is asking the user to pick something.
     Choice,
 }
 
@@ -257,4 +258,22 @@ pub struct NavigatorStatus {
 pub enum NavigatorEmission {
     StateChange(StateChangePayload),
     SessionsChanged(NavigatorSessionsPayload),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AgentType;
+
+    #[test]
+    fn codex_agent_type_uses_stable_wire_name() {
+        assert_eq!(AgentType::Codex.as_str(), "codex");
+        assert_eq!(
+            serde_json::to_string(&AgentType::Codex).expect("serialize"),
+            "\"codex\""
+        );
+        assert_eq!(
+            serde_json::from_str::<AgentType>("\"codex\"").expect("deserialize"),
+            AgentType::Codex
+        );
+    }
 }

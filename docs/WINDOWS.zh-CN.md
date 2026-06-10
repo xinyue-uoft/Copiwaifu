@@ -28,7 +28,7 @@ pnpm tauri:build:windows
 - 用户目录统一通过 `src-tauri/src/platform.rs` 解析，Windows 下会按 `HOME`、`USERPROFILE`、`HOMEDRIVE` + `HOMEPATH` 的顺序兜底。
 - 端口文件优先写入 `%USERPROFILE%\.copiwaifu\port`，兜底写入 `%TEMP%\copiwaifu-port`。
 - hook 脚本同样读取 `os.homedir()` 和 `os.tmpdir()`，不要重新硬编码 `/tmp`。
-- 写入 Codex `notify` 的 TOML 字符串必须保留反斜杠转义测试。
+- Codex 现使用 `~/.codex/hooks.json` lifecycle hooks；旧 `notify` 的 TOML 反斜杠转义测试仍作为 legacy cleanup 覆盖保留。
 
 ## 验证清单
 
@@ -38,4 +38,3 @@ pnpm tauri:build:windows
 4. `cargo test`，在 `src-tauri` 目录执行
 5. `pnpm tauri:build:windows`
 6. 安装生成的包，确认透明窗口、托盘菜单、设置窗口、开机自启、hook 安装/卸载可用
-

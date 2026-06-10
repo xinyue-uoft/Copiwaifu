@@ -35,6 +35,10 @@ pub fn codex_config_path() -> Result<PathBuf, String> {
     Ok(home_dir()?.join(".codex").join("config.toml"))
 }
 
+pub fn codex_hooks_path() -> Result<PathBuf, String> {
+    Ok(home_dir()?.join(".codex").join("hooks.json"))
+}
+
 pub fn gemini_settings_path() -> Result<PathBuf, String> {
     Ok(home_dir()?.join(".gemini").join("settings.json"))
 }
@@ -94,10 +98,14 @@ pub fn hook_command(script: &std::path::Path, agent: &str, event: &str) -> Strin
     )
 }
 
-// ── Claude-specific helpers ───────────────────────────────────────────────────
+// ── Hook object helpers ───────────────────────────────────────────────────────
 
 pub fn claude_hook_obj(command: &str) -> Value {
     json!({ "type": "command", "command": command })
+}
+
+pub fn codex_hook_obj(command: &str) -> Value {
+    json!({ "type": "command", "command": command, "timeout": 5 })
 }
 
 pub fn cmd_has_marker(v: &Value) -> bool {
@@ -230,4 +238,3 @@ mod tests {
         );
     }
 }
-

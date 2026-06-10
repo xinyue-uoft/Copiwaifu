@@ -37,7 +37,7 @@ const NS_NON_ACTIVATING_PANEL: i32 = 1 << 7;
 
 /// Turn a window into a non-activating floating panel: it floats above other
 /// apps, joins all Spaces, and — crucially — receives clicks WITHOUT stealing
-/// focus from the terminal / Claude. Used for both the desktop pet and the
+/// focus from the terminal / AI tool. Used for both the desktop pet and the
 /// notification window (the latter's Dismiss button needs the clicks).
 #[cfg(target_os = "macos")]
 #[allow(deprecated)]
