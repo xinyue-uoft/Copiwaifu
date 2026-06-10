@@ -10,7 +10,6 @@ pub mod hook_installer;
 pub mod notification;
 mod presentation;
 mod providers;
-mod reconcile;
 mod reducer;
 pub mod server;
 pub mod session_recovery;
@@ -22,6 +21,11 @@ use state::NavigatorState;
 
 pub struct NavigatorStore(pub Arc<Mutex<NavigatorState>>);
 
+/// First 8 chars of a session id for log lines (CC ids are ASCII UUIDs).
+pub(crate) fn short_id(id: &str) -> &str {
+    id.get(..8).unwrap_or(id)
+}
+
 pub fn init(app: &mut App) {
     let state = Arc::new(Mutex::new(NavigatorState::new()));
 
@@ -31,14 +35,14 @@ pub fn init(app: &mut App) {
     }
 
     if let Err(err) = hook_installer::install_hooks() {
-        eprintln!("navigator hook installation failed: {err}");
+        log::error!("[hooks] installation failed: {err}");
     }
     // Migration: strip any leftover blocking PermissionRequest http hook from a
     // previous build. If left behind, CC would POST to a route this build no
     // longer serves (404 → fail-open auto-allow). The notification feature
     // installs NO PermissionRequest hook — it observes the Notification event.
     if let Err(err) = hook_installer::strip_stale_permission_hook() {
-        eprintln!("navigator stale permission-hook cleanup failed: {err}");
+        log::error!("[hooks] stale permission-hook cleanup failed: {err}");
     }
 
     app.manage(NavigatorStore(state.clone()));
@@ -47,7 +51,6 @@ pub fn init(app: &mut App) {
     )));
 
     server::start(app.handle().clone(), state.clone());
-    reconcile::start(app.handle().clone(), state.clone());
     agent::start_cleanup_loop(app.handle().clone(), state);
 }
 

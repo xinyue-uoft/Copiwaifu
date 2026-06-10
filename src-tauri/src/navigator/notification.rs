@@ -1,33 +1,29 @@
 // Pet-side PASSIVE notification window + completion badge system.
 //
-// PERMISSION NOTIFICATIONS
-// Shows a card per Claude Code session that has been waiting for a permission
-// decision for more than NOTIF_DEBOUNCE_MS. Two mechanisms prevent re-showing:
+// ATTENTION NOTIFICATIONS — the (session_id, epoch) instance model
 //
-// • Debounce (2.5s): filters sub-second auto-mode tool-call spikes that briefly
-//   flip needs_attention without ever waiting for user input.
+// A "notification" is one concrete request for the user's attention: a
+// permission dialog (PermissionRequest / Notification hook) or a choice
+// (AskUserQuestion / ExitPlanMode via PreToolUse). The reducer bumps
+// `attention_epoch` on every false→true edge of `needs_attention`, so each
+// request has a stable identity (session_id, epoch):
 //
-// • Session-scoped seen buffer (`shown_this_session`): a HashSet<signature>
-//   that only grows — once a notification's content signature is inserted
-//   (on Dismiss), it is NEVER shown again in this copiwaifu session. This
-//   replaces the previous signature-based mute map, which was unreliable
-//   because:
-//     - intermediate events (PreToolUse, Notification…) can momentarily flip
-//       needs_attention=false for one reconcile tick, causing retain() to drop
-//       the mute;
-//     - the pending_ids retain cleared mutes during any brief state transition;
-//     - each clear triggered another card → window.show() → keyboard blocked.
-//
-//   With the seen buffer there is no retain/clear path — the dismiss is final.
-//   A genuinely different prompt on the same session has a different signature
-//   (different tool_name or summary) and passes through normally.
+//   • One popup per instance — a card appears once per epoch, after a short
+//     debounce that coalesces Notification + PermissionRequest double-fires.
+//   • Dismiss kills exactly that instance, forever. The window hides when no
+//     cards remain. A *new* request on the same session gets a new epoch and
+//     passes through normally.
+//   • Resolve — the user acts inside CC, the next event clears
+//     needs_attention, and the card dissolves on its own.
 //
 // COMPLETION BADGES
-// Shows a "完工啦！" chip at the bottom of the pet window for up to 5 minutes
-// after a session settles into Complete. Same 3s debounce. Stacks per-session.
+// A "完工啦！" chip at the bottom of the pet window for up to 5 minutes after
+// a session settles into Complete. Promoted once per completion-run (anchored
+// to the debounce stamp), badge lifetime is wall-clock only — it survives
+// session TTL eviction and new turns.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -35,17 +31,18 @@ use std::{
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
-use super::events::{AgentState, NavigatorSessionPayload, NavigatorSessionsPayload};
+use super::events::{
+    AgentState, AttentionKind, NavigatorSessionPayload, NavigatorSessionsPayload,
+};
+use super::short_id;
 
-// ── Permission notifications ──────────────────────────────────────────────────
+// ── Constants ─────────────────────────────────────────────────────────────────
 
 pub const NOTIFICATION_WINDOW_LABEL: &str = "notification";
 const NOTIFICATION_CHANGED_EVENT: &str = "notification:changed";
-/// A session must stay continuously `needs_attention` for at least this long
-/// before its card appears — filters out brief auto-handled tool-call spikes.
-const NOTIF_DEBOUNCE_MS: u64 = 2500;
-
-// ── Completion badges ─────────────────────────────────────────────────────────
+/// Coalesces near-simultaneous double-fires (Notification + PermissionRequest
+/// for the same dialog) and skips requests resolved within a second.
+const ATTN_DEBOUNCE_MS: u64 = 1_000;
 
 pub const COMPLETION_CHANGED_EVENT: &str = "completion:changed";
 const COMPLETE_DEBOUNCE_MS: u64 = 3_000;
@@ -57,26 +54,26 @@ pub struct NotificationStore(pub Mutex<NotifState>);
 
 #[derive(Default)]
 pub struct NotifState {
-    // -- permission notification state --
-
-    /// session_id → epoch-ms when it was first observed pending (debounce timer).
-    /// Cleared when the session leaves `needs_attention` so a genuine new
-    /// pending on the same session re-starts the 2.5s clock.
-    first_pending_ms: HashMap<String, u64>,
-
-    /// Global seen buffer — content signatures dismissed in this copiwaifu
-    /// session. Entries are NEVER removed. A dismissed notification can never
-    /// re-appear even if needs_attention cycles back to true. A new prompt on
-    /// the same session has a different signature and passes through normally.
-    shown_this_session: HashSet<String>,
+    /// One track per session currently waiting for attention.
+    attention: HashMap<String, AttnTrack>,
 
     // -- completion badge state --
     complete_first_seen: HashMap<String, u64>,
     complete_promoted: HashMap<String, CompletionEntry>,
-    complete_dismissed: HashSet<String>,
+    complete_dismissed: std::collections::HashSet<String>,
+}
+
+struct AttnTrack {
+    epoch: u64,
+    first_seen_ms: u64,
+    promoted: bool,
+    dismissed: bool,
 }
 
 struct CompletionEntry {
+    /// `complete_first_seen` stamp this entry was promoted from — promotes
+    /// exactly once per completion-run instead of refreshing every tick.
+    since_ms: u64,
     promoted_at_ms: u64,
     session_title: Option<String>,
     summary: Option<String>,
@@ -88,6 +85,10 @@ struct CompletionEntry {
 pub struct NotificationCard {
     pub session_id: String,
     pub agent: String,
+    /// Echoed back by Dismiss so it kills exactly this instance.
+    pub epoch: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<AttentionKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -96,8 +97,6 @@ pub struct NotificationCard {
     pub working_directory: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_title: Option<String>,
-    /// Content fingerprint sent to the frontend so Dismiss can echo it back.
-    pub signature: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -129,68 +128,104 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Content fingerprint for a pending session — captures what the user
-/// actually sees, so Dismiss is scoped to this specific prompt.
-fn signature(session: &NavigatorSessionPayload) -> String {
-    format!(
-        "{}|{}|{}",
-        session.session_title.as_deref().unwrap_or(""),
-        session.tool_name.as_deref().unwrap_or(""),
-        session.summary.as_deref().unwrap_or(""),
-    )
-}
-
-// ── Build functions ───────────────────────────────────────────────────────────
+// ── Attention cards ───────────────────────────────────────────────────────────
 
 fn build_cards(sessions: &NavigatorSessionsPayload, state: &mut NotifState) -> Vec<NotificationCard> {
     let now = now_ms();
+
     let pending: Vec<&NavigatorSessionPayload> = sessions
         .sessions
         .iter()
         .filter(|s| s.needs_attention == Some(true))
         .collect();
 
-    // Reset debounce timers for sessions that left pending — so a genuine new
-    // pending on the same session re-waits the full 2.5s.
-    let pending_ids: HashSet<&str> = pending.iter().map(|s| s.session_id.as_str()).collect();
-    state.first_pending_ms.retain(|sid, _| pending_ids.contains(sid.as_str()));
-
-    // `shown_this_session` is intentionally NOT pruned here — it is permanent
-    // for the lifetime of this copiwaifu process. See module-level comment.
+    // Sessions that stopped pending (user acted in CC, session ended/evicted):
+    // their instances are over — drop the tracks.
+    let pending_ids: std::collections::HashSet<&str> =
+        pending.iter().map(|s| s.session_id.as_str()).collect();
+    state.attention.retain(|sid, track| {
+        let keep = pending_ids.contains(sid.as_str());
+        if !keep && track.promoted {
+            log::info!(
+                "[notif] {} epoch={} {}",
+                short_id(sid),
+                track.epoch,
+                if track.dismissed { "closed" } else { "resolved" },
+            );
+        }
+        keep
+    });
 
     pending
         .into_iter()
         .filter_map(|s| {
-            // Debounce: stamp first-seen; hide until the session has stayed
-            // pending for NOTIF_DEBOUNCE_MS.
-            let since = *state
-                .first_pending_ms
+            let track = state
+                .attention
                 .entry(s.session_id.clone())
-                .or_insert(now);
-            if now.saturating_sub(since) < NOTIF_DEBOUNCE_MS {
+                .or_insert_with(|| {
+                    log::info!(
+                        "[notif] {} epoch={} created kind={:?} tool={}",
+                        short_id(&s.session_id),
+                        s.attention_epoch,
+                        s.attention_kind,
+                        s.tool_name.as_deref().unwrap_or("-"),
+                    );
+                    AttnTrack {
+                        epoch: s.attention_epoch,
+                        first_seen_ms: now,
+                        promoted: false,
+                        dismissed: false,
+                    }
+                });
+
+            // A new epoch on the same session is a brand-new request: fresh
+            // debounce, dismiss state cleared.
+            if track.epoch != s.attention_epoch {
+                log::info!(
+                    "[notif] {} epoch={} created (replaces epoch={})",
+                    short_id(&s.session_id),
+                    s.attention_epoch,
+                    track.epoch,
+                );
+                *track = AttnTrack {
+                    epoch: s.attention_epoch,
+                    first_seen_ms: now,
+                    promoted: false,
+                    dismissed: false,
+                };
+            }
+
+            if track.dismissed {
+                return None;
+            }
+            if now.saturating_sub(track.first_seen_ms) < ATTN_DEBOUNCE_MS {
                 return None; // still settling
             }
 
-            let sig = signature(s);
-
-            // Seen-buffer dedup: if this exact content has been dismissed in
-            // this session, never show it again.
-            if state.shown_this_session.contains(&sig) {
-                return None;
+            if !track.promoted {
+                track.promoted = true;
+                log::info!(
+                    "[notif] {} epoch={} promoted",
+                    short_id(&s.session_id),
+                    track.epoch,
+                );
             }
 
             Some(NotificationCard {
                 session_id: s.session_id.clone(),
                 agent: s.agent.as_str().to_string(),
+                epoch: track.epoch,
+                kind: s.attention_kind,
                 tool_name: s.tool_name.clone(),
                 summary: s.summary.clone(),
                 working_directory: s.working_directory.clone(),
                 session_title: s.session_title.clone(),
-                signature: sig,
             })
         })
         .collect()
 }
+
+// ── Completion badges ─────────────────────────────────────────────────────────
 
 fn build_completion_badges(
     sessions: &NavigatorSessionsPayload,
@@ -198,22 +233,28 @@ fn build_completion_badges(
 ) -> Vec<CompletionBadge> {
     let now = now_ms();
 
-    let complete_ids: HashSet<&str> = sessions
+    let complete_ids: std::collections::HashSet<&str> = sessions
         .sessions
         .iter()
         .filter(|s| s.state == AgentState::Complete && s.needs_attention != Some(true))
         .map(|s| s.session_id.as_str())
         .collect();
 
-    // Reset debounce timer when a session leaves Complete — so re-entering Complete
-    // starts a fresh 3s wait before promoting a new badge.
-    state.complete_first_seen.retain(|id, _| complete_ids.contains(id.as_str()));
+    // Reset debounce timer when a session leaves Complete — so re-entering
+    // Complete starts a fresh 3s wait before promoting a new badge.
+    state
+        .complete_first_seen
+        .retain(|id, _| complete_ids.contains(id.as_str()));
 
-    // Expire promoted entries older than the display window (plus a 1-minute grace).
-    // Intentionally NOT retained against complete_ids: once promoted, a badge survives
-    // session state transitions (e.g. user starts a new turn) and session TTL eviction.
-    state.complete_promoted.retain(|_, entry| {
-        now.saturating_sub(entry.promoted_at_ms) < COMPLETION_BADGE_DISPLAY_MS + 60_000
+    // Expire promoted entries past the display window (plus a 1-minute grace).
+    // Intentionally NOT retained against complete_ids: once promoted, a badge
+    // survives state transitions (new turn) and session TTL eviction.
+    state.complete_promoted.retain(|id, entry| {
+        let keep = now.saturating_sub(entry.promoted_at_ms) < COMPLETION_BADGE_DISPLAY_MS + 60_000;
+        if !keep {
+            log::info!("[badge] {} expired", short_id(id));
+        }
+        keep
     });
 
     for session in sessions
@@ -224,45 +265,53 @@ fn build_completion_badges(
         use std::collections::hash_map::Entry;
         let since = match state.complete_first_seen.entry(session.session_id.clone()) {
             Entry::Vacant(e) => {
-                // Session just (re-)entered Complete — clear any prior dismiss so a
-                // fresh badge can appear for this new completion.
+                // Session just (re-)entered Complete — clear any prior dismiss
+                // so a fresh badge can appear for this new completion.
                 state.complete_dismissed.remove(&session.session_id);
                 *e.insert(now)
             }
             Entry::Occupied(e) => *e.get(),
         };
 
-        eprintln!(
-            "[completion] session={} since_ms={} delta={}ms promoted={} dismissed={}",
-            &session.session_id[..8.min(session.session_id.len())],
-            since,
-            now.saturating_sub(since),
-            state.complete_promoted.contains_key(&session.session_id),
-            state.complete_dismissed.contains(&session.session_id),
-        );
-
-        if now.saturating_sub(since) >= COMPLETE_DEBOUNCE_MS
-            && !state.complete_dismissed.contains(&session.session_id)
+        if now.saturating_sub(since) < COMPLETE_DEBOUNCE_MS
+            || state.complete_dismissed.contains(&session.session_id)
         {
-            // Use the best available summary: ai_talk_context carries last_meaningful_summary
-            // (user's prompt or CC's result text); raw session.summary is often the fallback
-            // "等待 claude-code 操作" because CC's Stop hook payload has no result field.
-            let badge_summary = session
-                .ai_talk_context
-                .as_ref()
-                .and_then(|ctx| ctx.last_meaningful_summary.as_deref())
-                .map(str::to_string)
-                .or_else(|| session.summary.clone());
-            // Always upsert — refreshes badge content when a session completes multiple turns.
-            state.complete_promoted.insert(
-                session.session_id.clone(),
-                CompletionEntry {
-                    promoted_at_ms: now,
-                    session_title: session.session_title.clone(),
-                    summary: badge_summary,
-                },
-            );
+            continue;
         }
+
+        // Promote once per completion-run (anchored to the debounce stamp).
+        let already_promoted = state
+            .complete_promoted
+            .get(&session.session_id)
+            .is_some_and(|entry| entry.since_ms == since);
+        if already_promoted {
+            continue;
+        }
+
+        // Best available summary: ai_talk_context carries the real CC result
+        // text; raw session.summary is often the "等待 claude-code 操作"
+        // hook fallback.
+        let badge_summary = session
+            .ai_talk_context
+            .as_ref()
+            .and_then(|ctx| ctx.last_meaningful_summary.as_deref())
+            .map(str::to_string)
+            .or_else(|| session.summary.clone());
+
+        log::info!(
+            "[badge] {} promoted summary_len={}",
+            short_id(&session.session_id),
+            badge_summary.as_deref().map(str::len).unwrap_or(0),
+        );
+        state.complete_promoted.insert(
+            session.session_id.clone(),
+            CompletionEntry {
+                since_ms: since,
+                promoted_at_ms: now,
+                session_title: session.session_title.clone(),
+                summary: badge_summary,
+            },
+        );
     }
 
     let mut badges: Vec<CompletionBadge> = state
@@ -319,7 +368,12 @@ pub fn reconcile(app_handle: &AppHandle) {
         Err(_) => return,
     };
 
-    let _ = app_handle.emit(NOTIFICATION_CHANGED_EVENT, NotificationPayload { cards: cards.clone() });
+    let _ = app_handle.emit(
+        NOTIFICATION_CHANGED_EVENT,
+        NotificationPayload {
+            cards: cards.clone(),
+        },
+    );
     let _ = app_handle.emit(COMPLETION_CHANGED_EVENT, CompletionPayload { badges });
 
     if enabled && !cards.is_empty() {
@@ -350,15 +404,32 @@ pub fn get_notifications(
 #[tauri::command]
 pub fn dismiss_notification(
     session_id: String,
-    signature: String,
+    epoch: u64,
     app_handle: AppHandle,
     store: State<'_, NotificationStore>,
 ) -> Result<(), String> {
-    eprintln!("[notif] dismiss: session={} sig_len={}", &session_id[..8.min(session_id.len())], signature.len());
     if let Ok(mut state) = store.0.lock() {
-        // Record in the permanent seen buffer — this sig will never generate a
-        // card again in this copiwaifu session, regardless of needs_attention.
-        state.shown_this_session.insert(signature);
+        match state.attention.get_mut(&session_id) {
+            Some(track) if track.epoch == epoch => {
+                track.dismissed = true;
+                log::info!("[notif] {} epoch={} dismissed", short_id(&session_id), epoch);
+            }
+            Some(track) => {
+                log::warn!(
+                    "[notif] {} dismiss for epoch={} ignored (current epoch={})",
+                    short_id(&session_id),
+                    epoch,
+                    track.epoch,
+                );
+            }
+            None => {
+                log::warn!(
+                    "[notif] {} dismiss for epoch={} ignored (no active instance)",
+                    short_id(&session_id),
+                    epoch,
+                );
+            }
+        }
     }
     reconcile(&app_handle);
     Ok(())
@@ -389,6 +460,7 @@ pub fn dismiss_completion(
     if let Ok(mut state) = store.0.lock() {
         state.complete_dismissed.insert(session_id.clone());
         state.complete_promoted.remove(&session_id);
+        log::info!("[badge] {} dismissed", short_id(&session_id));
     }
     reconcile(&app_handle);
     Ok(())
@@ -400,10 +472,11 @@ fn ensure_window(app_handle: &AppHandle) {
     let app = app_handle.clone();
     let _ = app_handle.run_on_main_thread(move || {
         if let Some(window) = app.get_webview_window(NOTIFICATION_WINDOW_LABEL) {
-            // Only call orderFront when truly hidden — repeated orderFront on an
-            // NSNonActivatingPanel re-routes macOS keyboard events on each call,
-            // producing the "keyboard blocked" symptom.
+            // Only call orderFront when truly hidden — repeated orderFront on
+            // an NSNonActivatingPanel re-routes macOS keyboard events on each
+            // call, producing the "keyboard blocked" symptom.
             if !window.is_visible().unwrap_or(false) {
+                log::info!("[window] notification show");
                 let _ = window.show();
             }
             return;
@@ -424,11 +497,12 @@ fn ensure_window(app_handle: &AppHandle) {
         .build()
         {
             Ok(window) => {
+                log::info!("[window] notification created");
                 if let Err(err) = crate::platform::elevate_panel(&window) {
-                    eprintln!("[notification] elevate failed: {err}");
+                    log::warn!("[window] elevate failed: {err}");
                 }
             }
-            Err(err) => eprintln!("[notification] window build failed: {err}"),
+            Err(err) => log::error!("[window] notification build failed: {err}"),
         }
     });
 }
@@ -437,7 +511,10 @@ fn hide_window(app_handle: &AppHandle) {
     let app = app_handle.clone();
     let _ = app_handle.run_on_main_thread(move || {
         if let Some(window) = app.get_webview_window(NOTIFICATION_WINDOW_LABEL) {
-            let _ = window.hide();
+            if window.is_visible().unwrap_or(false) {
+                log::info!("[window] notification hide");
+                let _ = window.hide();
+            }
         }
     });
 }

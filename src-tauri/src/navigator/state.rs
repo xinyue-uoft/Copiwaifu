@@ -6,12 +6,16 @@ use std::{
 use super::{
     agent::{session_key, SESSION_TTL},
     events::{
-        AgentEvent, AgentState, AgentType, AiTalkContext, AiTalkEventDigest, EventType,
-        NavigatorEmission, NavigatorSessionsPayload, NavigatorStatus, SessionPhase,
+        AgentEvent, AgentState, AgentType, AiTalkContext, AiTalkEventDigest, AttentionKind,
+        EventType, NavigatorEmission, NavigatorSessionsPayload, NavigatorStatus, SessionPhase,
         StateChangePayload,
     },
     presentation, reducer, session_store,
 };
+
+/// A session waiting on the user is exempt from the normal 60s TTL (CC sends
+/// no events while its dialog is open) — but never beyond this hard cap.
+const ATTENTION_MAX_HOLD: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Clone, Debug)]
 pub struct SessionSnapshot {
@@ -24,6 +28,8 @@ pub struct SessionSnapshot {
     pub working_directory: Option<String>,
     pub session_title: Option<String>,
     pub needs_attention: Option<bool>,
+    pub attention_epoch: u64,
+    pub attention_kind: Option<AttentionKind>,
     pub events: Vec<AiTalkEventDigest>,
     pub last_meaningful_summary: Option<String>,
     pub ai_talk_context: Option<AiTalkContext>,
@@ -48,6 +54,8 @@ impl SessionSnapshot {
             working_directory: None,
             session_title: None,
             needs_attention: Some(false),
+            attention_epoch: 0,
+            attention_kind: None,
             events: Vec::new(),
             last_meaningful_summary: None,
             ai_talk_context: None,
@@ -137,13 +145,13 @@ impl NavigatorState {
 
         if let Some(snapshot) = persist_snapshot {
             if let Err(err) = session_store::persist_snapshot(&snapshot) {
-                eprintln!("[session_store] persist failed: {err}");
+                log::warn!("[session_store] persist failed: {err}");
             }
         }
 
         if let Some((agent, session_id, ended_at_ms)) = ended_session {
             if let Err(err) = session_store::mark_session_ended(agent, &session_id, ended_at_ms) {
-                eprintln!("[session_store] mark ended failed: {err}");
+                log::warn!("[session_store] mark ended failed: {err}");
             }
         }
 
@@ -196,8 +204,16 @@ impl NavigatorState {
     }
 
     fn cleanup_stale_at(&mut self, now: Instant) -> Vec<NavigatorEmission> {
-        self.sessions
-            .retain(|_, session| now.duration_since(session.updated_at) < SESSION_TTL);
+        self.sessions.retain(|_, session| {
+            let age = now.duration_since(session.updated_at);
+            if session.needs_attention == Some(true) {
+                // CC is silent while its permission/question dialog is open —
+                // keep the session (and its notification card) alive.
+                age < ATTENTION_MAX_HOLD
+            } else {
+                age < SESSION_TTL
+            }
+        });
 
         self.ai_talk_claims
             .retain(|_, claimed_at| now.duration_since(*claimed_at) < Duration::from_secs(300));
@@ -292,11 +308,11 @@ mod tests {
     fn active_session_beats_stale_complete_snapshot() {
         let mut state = NavigatorState::new();
 
-        let first = state.apply_event(event(AgentType::Codex, "done-session", EventType::Complete));
+        let first = state.apply_event(event(AgentType::ClaudeCode, "done-session", EventType::Complete));
         assert_eq!(state_from(first), AgentState::Complete);
 
         let second = state.apply_event(event(
-            AgentType::Codex,
+            AgentType::ClaudeCode,
             "active-session",
             EventType::Thinking,
         ));
@@ -307,11 +323,11 @@ mod tests {
     fn resumed_work_is_not_blocked_by_complete_min_duration() {
         let mut state = NavigatorState::new();
 
-        let first = state.apply_event(event(AgentType::Codex, "same-session", EventType::Complete));
+        let first = state.apply_event(event(AgentType::ClaudeCode, "same-session", EventType::Complete));
         assert_eq!(state_from(first), AgentState::Complete);
 
         let second = state.apply_event(turn_start_event(
-            AgentType::Codex,
+            AgentType::ClaudeCode,
             "same-session",
             "follow-up",
         ));
@@ -322,11 +338,11 @@ mod tests {
     fn stale_thinking_snapshot_after_complete_does_not_resume_turn() {
         let mut state = NavigatorState::new();
 
-        let first = state.apply_event(event(AgentType::Codex, "same-session", EventType::Complete));
+        let first = state.apply_event(event(AgentType::ClaudeCode, "same-session", EventType::Complete));
         assert_eq!(state_from(first), AgentState::Complete);
 
         let second =
-            state.apply_event(event(AgentType::Codex, "same-session", EventType::Thinking));
+            state.apply_event(event(AgentType::ClaudeCode, "same-session", EventType::Thinking));
         assert!(!has_state_change(&second));
     }
 
@@ -334,33 +350,101 @@ mod tests {
     fn ai_talk_claims_once_per_terminal_turn() {
         let mut state = NavigatorState::new();
 
-        state.apply_event(turn_start_event(AgentType::Codex, "same-session", "first"));
-        state.apply_event(event(AgentType::Codex, "same-session", EventType::Complete));
+        state.apply_event(turn_start_event(AgentType::ClaudeCode, "same-session", "first"));
+        state.apply_event(event(AgentType::ClaudeCode, "same-session", EventType::Complete));
 
         assert!(state
-            .claim_ai_talk_context(AgentType::Codex, "same-session", AgentState::Complete)
+            .claim_ai_talk_context(AgentType::ClaudeCode, "same-session", AgentState::Complete)
             .is_some());
         assert!(state
-            .claim_ai_talk_context(AgentType::Codex, "same-session", AgentState::Complete)
+            .claim_ai_talk_context(AgentType::ClaudeCode, "same-session", AgentState::Complete)
             .is_none());
 
-        state.apply_event(turn_start_event(AgentType::Codex, "same-session", "second"));
-        state.apply_event(event(AgentType::Codex, "same-session", EventType::Complete));
+        state.apply_event(turn_start_event(AgentType::ClaudeCode, "same-session", "second"));
+        state.apply_event(event(AgentType::ClaudeCode, "same-session", EventType::Complete));
 
         assert!(state
-            .claim_ai_talk_context(AgentType::Codex, "same-session", AgentState::Complete)
+            .claim_ai_talk_context(AgentType::ClaudeCode, "same-session", AgentState::Complete)
             .is_some());
+    }
+
+    #[test]
+    fn complete_clears_waiting_attention() {
+        let mut state = NavigatorState::new();
+
+        state.apply_event(event(
+            AgentType::ClaudeCode,
+            "same-session",
+            EventType::NeedsAttention,
+        ));
+        let emissions = state.apply_event(event(
+            AgentType::ClaudeCode,
+            "same-session",
+            EventType::Complete,
+        ));
+
+        assert_eq!(state_from(emissions), AgentState::Complete);
+        let snapshot = state.sessions_snapshot();
+        assert_eq!(snapshot.sessions[0].needs_attention, Some(false));
+    }
+
+    #[test]
+    fn attention_epoch_bumps_once_per_continuous_pending_run() {
+        let mut state = NavigatorState::new();
+
+        state.apply_event(event(
+            AgentType::ClaudeCode,
+            "same-session",
+            EventType::NeedsAttention,
+        ));
+        state.apply_event(event(
+            AgentType::ClaudeCode,
+            "same-session",
+            EventType::NeedsAttention,
+        ));
+        assert_eq!(state.sessions_snapshot().sessions[0].attention_epoch, 1);
+
+        state.apply_event(event(
+            AgentType::ClaudeCode,
+            "same-session",
+            EventType::ToolResult,
+        ));
+        state.apply_event(event(
+            AgentType::ClaudeCode,
+            "same-session",
+            EventType::NeedsAttention,
+        ));
+        assert_eq!(state.sessions_snapshot().sessions[0].attention_epoch, 2);
+    }
+
+    #[test]
+    fn attention_session_survives_session_ttl() {
+        let mut state = NavigatorState::new();
+
+        state.apply_event(event(
+            AgentType::ClaudeCode,
+            "same-session",
+            EventType::NeedsAttention,
+        ));
+
+        let past_ttl = std::time::Instant::now() + Duration::from_secs(120);
+        state.cleanup_stale_at(past_ttl);
+        assert_eq!(state.sessions_snapshot().sessions.len(), 1);
+
+        let past_hold = std::time::Instant::now() + Duration::from_secs(31 * 60);
+        state.cleanup_stale_at(past_hold);
+        assert_eq!(state.sessions_snapshot().sessions.len(), 0);
     }
 
     #[test]
     fn cleanup_tick_releases_delayed_idle_after_complete_min_duration() {
         let mut state = NavigatorState::new();
 
-        let first = state.apply_event(event(AgentType::Codex, "same-session", EventType::Complete));
+        let first = state.apply_event(event(AgentType::ClaudeCode, "same-session", EventType::Complete));
         assert_eq!(state_from(first), AgentState::Complete);
 
         let second = state.apply_event(event(
-            AgentType::Codex,
+            AgentType::ClaudeCode,
             "same-session",
             EventType::SessionEnd,
         ));

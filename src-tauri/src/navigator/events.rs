@@ -2,27 +2,30 @@ use serde::{Deserialize, Serialize};
 
 use super::providers;
 
+/// copiwaifu only integrates Claude Code. The enum is kept (single variant)
+/// so wire formats and session files stay explicit about their source.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AgentType {
     ClaudeCode,
-    Copilot,
-    Codex,
-    Gemini,
-    #[serde(rename = "opencode")]
-    OpenCode,
 }
 
 impl AgentType {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::ClaudeCode => "claude-code",
-            Self::Copilot => "copilot",
-            Self::Codex => "codex",
-            Self::Gemini => "gemini",
-            Self::OpenCode => "opencode",
         }
     }
+}
+
+/// Why a session is waiting on the user — drives popup card copy.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttentionKind {
+    /// CC is asking for a tool permission (PermissionRequest / Notification).
+    Permission,
+    /// CC is asking the user to pick something (AskUserQuestion / ExitPlanMode).
+    Choice,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -103,6 +106,8 @@ pub struct EventData {
     #[serde(default)]
     pub needs_attention: Option<bool>,
     #[serde(default)]
+    pub attention_kind: Option<AttentionKind>,
+    #[serde(default)]
     pub turn_start: bool,
     #[serde(default)]
     pub turn_fingerprint: Option<String>,
@@ -156,94 +161,33 @@ pub struct AgentEvent {
     pub data: EventData,
 }
 
+/// Wire shape POSTed by hooks/copiwaifu-hook.js: { agent, session_id, event, data }.
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct IncomingHookEvent {
     #[serde(default)]
     pub agent: Option<AgentType>,
-    #[serde(default, alias = "agent_id")]
-    pub agent_id: Option<String>,
     pub session_id: String,
     #[serde(default)]
     pub event: Option<String>,
     #[serde(default)]
-    pub state: Option<AgentState>,
-    #[serde(default)]
     pub data: EventData,
-    #[serde(default)]
-    pub tool_name: Option<String>,
-    #[serde(default)]
-    pub summary: Option<String>,
-    #[serde(default)]
-    pub working_directory: Option<String>,
-    #[serde(default)]
-    pub session_title: Option<String>,
-    #[serde(default)]
-    pub needs_attention: Option<bool>,
-    #[serde(default)]
-    pub turn_start: Option<bool>,
-    #[serde(default)]
-    pub turn_fingerprint: Option<String>,
 }
 
 impl IncomingHookEvent {
     pub fn into_agent_event(self) -> Result<AgentEvent, String> {
-        let agent = self
-            .agent
-            .or_else(|| {
-                self.agent_id
-                    .as_deref()
-                    .and_then(providers::parse_agent_type)
-            })
-            .ok_or_else(|| "missing agent".to_string())?;
-
-        let event = if let Some(raw_event) = self.event.as_deref() {
-            providers::normalize_event(agent, raw_event)?
-        } else if let Some(state) = self.state {
-            event_type_from_state(state)
-        } else {
-            return Err("missing event".to_string());
-        };
-
-        let mut data = self.data;
-        if data.tool_name.is_none() {
-            data.tool_name = self.tool_name;
-        }
-        if data.summary.is_none() {
-            data.summary = self.summary;
-        }
-        if data.working_directory.is_none() {
-            data.working_directory = self.working_directory;
-        }
-        if data.session_title.is_none() {
-            data.session_title = self.session_title;
-        }
-        if data.needs_attention.is_none() {
-            data.needs_attention = self.needs_attention;
-        }
-        if !data.turn_start {
-            data.turn_start = self.turn_start.unwrap_or(false);
-        }
-        if data.turn_fingerprint.is_none() {
-            data.turn_fingerprint = self.turn_fingerprint;
-        }
+        let agent = self.agent.ok_or_else(|| "missing agent".to_string())?;
+        let raw_event = self
+            .event
+            .as_deref()
+            .ok_or_else(|| "missing event".to_string())?;
+        let event = providers::normalize_event(raw_event)?;
 
         Ok(AgentEvent {
             agent,
             session_id: self.session_id,
             event,
-            data,
+            data: self.data,
         })
-    }
-}
-
-fn event_type_from_state(state: AgentState) -> EventType {
-    match state {
-        AgentState::Idle => EventType::Complete,
-        AgentState::Thinking => EventType::Thinking,
-        AgentState::ToolUse => EventType::ToolUse,
-        AgentState::Error => EventType::Error,
-        AgentState::Complete => EventType::Complete,
-        AgentState::NeedsAttention => EventType::NeedsAttention,
     }
 }
 
@@ -286,6 +230,11 @@ pub struct NavigatorSessionPayload {
     pub session_title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub needs_attention: Option<bool>,
+    /// Bumped each time the session enters needs_attention — identifies one
+    /// concrete approval/choice request, so notifications map 1:1 to popups.
+    pub attention_epoch: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attention_kind: Option<AttentionKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_talk_context: Option<AiTalkContext>,
 }

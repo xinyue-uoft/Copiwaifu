@@ -25,7 +25,7 @@ pub fn recover(state: &mut NavigatorState) {
     let entries = match fs::read_dir(&sessions_dir) {
         Ok(e) => e,
         Err(err) => {
-            eprintln!("[session_recovery] read_dir failed: {err}");
+            log::warn!("[recovery] read_dir failed: {err}");
             return;
         }
     };
@@ -42,7 +42,7 @@ fn recover_session(state: &mut NavigatorState, path: &PathBuf) {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(err) => {
-            eprintln!("[session_recovery] read failed {path:?}: {err}");
+            log::warn!("[recovery] read failed {path:?}: {err}");
             return;
         }
     };
@@ -50,7 +50,7 @@ fn recover_session(state: &mut NavigatorState, path: &PathBuf) {
     let json: serde_json::Value = match serde_json::from_str(&content) {
         Ok(v) => v,
         Err(err) => {
-            eprintln!("[session_recovery] parse failed {path:?}: {err}");
+            log::warn!("[recovery] parse failed {path:?}: {err}");
             return;
         }
     };
@@ -81,17 +81,19 @@ fn recover_session(state: &mut NavigatorState, path: &PathBuf) {
 
     let agent = match json["agent"].as_str() {
         Some("claude-code") => AgentType::ClaudeCode,
-        Some("copilot") => AgentType::Copilot,
-        Some("codex") => AgentType::Codex,
-        Some("gemini") => AgentType::Gemini,
-        Some("opencode") => AgentType::OpenCode,
-        _ => return,
+        // Session files from agents this build no longer integrates are stale
+        // app-managed cache — clean them up like any aged session file.
+        Some(_) => {
+            let _ = fs::remove_file(path);
+            return;
+        }
+        None => return,
     };
 
+    // Never resurrect NeedsAttention across restarts: a persisted
+    // needsAttention flag says nothing about whether CC's dialog is still
+    // open, and stale ones used to produce ghost popups on every app start.
     let event_type = match json["status"].as_str() {
-        Some("working") if json["needsAttention"].as_bool().unwrap_or(false) => {
-            EventType::NeedsAttention
-        }
         Some("working") => EventType::Thinking,
         Some("error") => EventType::Error,
         Some("completed") => EventType::Complete,
@@ -111,12 +113,18 @@ fn recover_session(state: &mut NavigatorState, path: &PathBuf) {
             summary,
             working_directory: json["workingDirectory"].as_str().map(str::to_string),
             session_title: json["sessionTitle"].as_str().map(str::to_string),
-            needs_attention: json["needsAttention"].as_bool(),
+            needs_attention: Some(false),
+            attention_kind: None,
             turn_start: false,
             turn_fingerprint: None,
         },
     };
 
+    log::info!(
+        "[recovery] {} status={} restored",
+        super::short_id(&event.session_id),
+        json["status"].as_str().unwrap_or("?"),
+    );
     state.apply_event(event);
 }
 

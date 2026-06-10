@@ -102,7 +102,7 @@ pub async fn generate_ai_talk(
     };
 
     let Some(script_path) = resolve_sidecar_script(&app_handle) else {
-        eprintln!("[ai_talk] sidecar script not found");
+        log::warn!("[ai-talk] sidecar script not found");
         return Ok(None);
     };
 
@@ -115,8 +115,8 @@ pub async fn generate_ai_talk(
         character_name,
     };
 
-    eprintln!(
-        "[ai_talk] sidecar request: {}",
+    log::info!(
+        "[ai-talk] sidecar request: {}",
         serde_json::to_string(&payload.redacted())
             .unwrap_or_else(|_| "<unserializable>".to_string())
     );
@@ -255,7 +255,7 @@ fn run_sidecar(script_path: &Path, payload: &SidecarRequest) -> Result<SidecarRu
     let output = child.wait_with_output().map_err(|err| err.to_string())?;
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     if !stderr.trim().is_empty() {
-        eprintln!("{}", stderr.trim());
+        log::info!("[ai-talk] sidecar stderr: {}", stderr.trim());
     }
     if !output.status.success() {
         return Ok(SidecarRunOutput {
@@ -276,8 +276,8 @@ fn run_sidecar(script_path: &Path, payload: &SidecarRequest) -> Result<SidecarRu
         });
     }
 
-    eprintln!(
-        "[ai_talk] sidecar response: {}",
+    log::info!(
+        "[ai-talk] sidecar response: {}",
         serde_json::to_string(&response).unwrap_or_else(|_| "<unserializable>".to_string())
     );
 

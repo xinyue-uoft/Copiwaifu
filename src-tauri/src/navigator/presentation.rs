@@ -71,6 +71,8 @@ fn into_payload(session: &SessionSnapshot) -> NavigatorSessionPayload {
         working_directory: session.working_directory.clone(),
         session_title: session.session_title.clone(),
         needs_attention: session.needs_attention,
+        attention_epoch: session.attention_epoch,
+        attention_kind: session.attention_kind,
         ai_talk_context: session.ai_talk_context.clone(),
     }
 }

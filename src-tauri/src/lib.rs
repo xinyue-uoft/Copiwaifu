@@ -38,7 +38,28 @@ pub fn run() {
     #[cfg(target_os = "macos")]
     fix_path_env();
 
+    // Unified log file: ~/.copiwaifu/logs/copiwaifu.log (+ stdout in dev).
+    // Frontend webviews log into the same file via @tauri-apps/plugin-log.
+    let log_dir = platform::runtime_dir()
+        .map(|dir| dir.join("logs"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("logs"));
+
     let builder = tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .targets([
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Folder {
+                        path: log_dir,
+                        file_name: Some("copiwaifu".into()),
+                    }),
+                ])
+                .level(log::LevelFilter::Info)
+                .max_file_size(5_000_000)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
+                .timezone_strategy(tauri_plugin_log::TimezoneStrategy::UseLocal)
+                .build(),
+        )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init());

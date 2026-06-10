@@ -23,7 +23,7 @@ const PORT_ATTEMPTS: u16 = 10;
 pub fn start(app_handle: AppHandle, state: Arc<Mutex<NavigatorState>>) {
     thread::spawn(move || {
         let Some((server, port)) = bind_server() else {
-            eprintln!("navigator server failed to bind any port");
+            log::error!("[server] failed to bind any port");
             return;
         };
 
@@ -120,9 +120,18 @@ fn handle_event_request(
     let event = match parsed {
         Ok(event) => event,
         Err(err) => {
+            log::warn!("[server] rejected event payload: {err}");
             return json_response(StatusCode(400), json!({ "error": err }));
         }
     };
+
+    log::info!(
+        "[server] rx {} {:?} tool={} attn={}",
+        super::short_id(&event.session_id),
+        event.event,
+        event.data.tool_name.as_deref().unwrap_or("-"),
+        event.data.needs_attention.unwrap_or(false),
+    );
 
     let emissions = match state.lock() {
         Ok(mut navigator) => navigator.apply_event(event),
