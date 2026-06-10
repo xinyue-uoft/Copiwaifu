@@ -113,6 +113,17 @@ impl NavigatorState {
     }
 
     pub fn apply_event(&mut self, event: AgentEvent) -> Vec<NavigatorEmission> {
+        self.apply_event_inner(event, true)
+    }
+
+    /// Recovery variant: rebuilds in-memory state WITHOUT re-persisting the
+    /// session file — re-stamping lastUpdated on every start would keep stale
+    /// sessions eternally "fresh" (and resurrect their 完工 badges forever).
+    pub fn apply_recovered_event(&mut self, event: AgentEvent) -> Vec<NavigatorEmission> {
+        self.apply_event_inner(event, false)
+    }
+
+    fn apply_event_inner(&mut self, event: AgentEvent, persist: bool) -> Vec<NavigatorEmission> {
         let now = Instant::now();
         let now_ms = current_time_ms();
         let key = session_key(&event.agent, &event.session_id);
@@ -128,7 +139,7 @@ impl NavigatorState {
             if reduced.removed {
                 cached_context = session.ai_talk_context.clone();
                 ended_session = Some((event.agent, event.session_id.clone(), now_ms));
-            } else {
+            } else if persist {
                 persist_snapshot = Some(session.clone());
             }
             reduced.removed

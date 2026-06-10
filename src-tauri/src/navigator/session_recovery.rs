@@ -11,6 +11,9 @@ use super::{
 use crate::platform;
 
 const SESSION_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+/// Completed sessions are only restored if they finished this recently —
+/// otherwise every app start would resurrect long-gone 完工 badges.
+const COMPLETED_RESTORE_WINDOW_MS: i64 = 5 * 60 * 1000;
 
 pub fn recover(state: &mut NavigatorState) {
     let sessions_dir = match home_sessions_dir() {
@@ -74,6 +77,19 @@ fn recover_session(state: &mut NavigatorState, path: &PathBuf) {
         }
     }
 
+    if json["status"].as_str() == Some("completed") {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        let fresh = json["lastUpdated"]
+            .as_i64()
+            .is_some_and(|last| now_ms.saturating_sub(last) < COMPLETED_RESTORE_WINDOW_MS);
+        if !fresh {
+            return; // file stays for the 24h cull; no stale badge resurrected
+        }
+    }
+
     let session_id = match json["sessionId"].as_str() {
         Some(s) => s.to_string(),
         None => return,
@@ -125,7 +141,7 @@ fn recover_session(state: &mut NavigatorState, path: &PathBuf) {
         super::short_id(&event.session_id),
         json["status"].as_str().unwrap_or("?"),
     );
-    state.apply_event(event);
+    state.apply_recovered_event(event);
 }
 
 fn recover_summary(json: &serde_json::Value) -> Option<String> {
