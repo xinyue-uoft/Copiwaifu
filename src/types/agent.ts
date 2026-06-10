@@ -1,4 +1,7 @@
-export type AgentType = 'claude-code' | 'copilot' | 'codex' | 'gemini' | 'opencode'
+export type AgentType = 'claude-code'
+
+/** Why a session waits on the user — drives popup card copy. */
+export type AttentionKind = 'permission' | 'choice'
 
 export const APP_LANGUAGE = {
   ENGLISH: 'english',
@@ -233,6 +236,8 @@ export interface NavigatorSessionInfo {
   working_directory?: string
   session_title?: string
   needs_attention?: boolean
+  attention_epoch: number
+  attention_kind?: AttentionKind
   ai_talk_context?: AiTalkContext
 }
 
@@ -281,11 +286,13 @@ export function createDefaultAiTalkSettings(): AiTalkSettings {
 export interface NotificationCard {
   session_id: string
   agent: string
+  /** Identifies one concrete attention request — echoed back on Dismiss. */
+  epoch: number
+  kind?: AttentionKind
   tool_name?: string
   summary?: string
   working_directory?: string
   session_title?: string
-  signature: string
 }
 
 export interface NotificationPayload {

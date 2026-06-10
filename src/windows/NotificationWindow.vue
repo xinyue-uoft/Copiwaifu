@@ -3,20 +3,32 @@ import type { UnlistenFn } from '@tauri-apps/api/event'
 import type { AppBootstrap, NotificationCard, NotificationPayload } from '../types/agent'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import { info as logInfo, warn as logWarn } from '@tauri-apps/plugin-log'
 import { onMounted, onUnmounted, ref } from 'vue'
 
 // Provided by App.vue for parity with the other windows; rendered in English.
 defineProps<{ bootstrap: AppBootstrap }>()
 
-// Passive notifications: one card per Claude Code session waiting for a
-// permission decision. We make NO decision — the user resolves in their
-// terminal / Claude. Cards auto-dissolve when the backend clears them; Dismiss
-// mutes a card locally (backend tracks it, hides the window when none remain).
+// Passive notifications: one card per attention request — a permission
+// approval or a choice CC is waiting on. We make NO decision; the user
+// resolves it in their terminal / Claude. Cards auto-dissolve when the
+// request resolves; Dismiss kills exactly this (session, epoch) instance and
+// the window hides when none remain.
 const cards = ref<NotificationCard[]>([])
 let unlisten: UnlistenFn | null = null
 
 function agentLabel(agent: string) {
   return agent.replace(/-/g, ' ')
+}
+
+function kindTag(card: NotificationCard) {
+  return card.kind === 'choice' ? 'choose' : 'approval'
+}
+
+function kindHint(card: NotificationCard) {
+  return card.kind === 'choice'
+    ? 'Pick an option in your terminal / Claude.'
+    : 'Resolve it in your terminal / Claude.'
 }
 
 function folderName(path?: string) {
@@ -42,9 +54,11 @@ async function refresh() {
 
 async function dismiss(card: NotificationCard) {
   try {
-    await invoke('dismiss_notification', { sessionId: card.session_id, signature: card.signature })
+    void logInfo(`[notif-ui] dismiss clicked ${card.session_id.slice(0, 8)} epoch=${card.epoch}`)
+    await invoke('dismiss_notification', { sessionId: card.session_id, epoch: card.epoch })
   }
   catch (error) {
+    void logWarn(`[notif-ui] dismiss failed: ${String(error)}`)
     console.warn('failed to dismiss notification', error)
   }
 }
@@ -71,16 +85,16 @@ onUnmounted(() => {
     >
       <section
         v-for="card in cards"
-        :key="card.session_id"
+        :key="`${card.session_id}:${card.epoch}`"
         class="notif-card"
       >
         <header class="notif-head">
           <span class="notif-agent">{{ agentLabel(card.agent) }}</span>
-          <span class="notif-tag">waiting</span>
+          <span class="notif-tag">{{ kindTag(card) }}</span>
         </header>
 
         <div class="notif-tool">
-          {{ card.tool_name ?? 'Permission' }}
+          {{ card.tool_name ?? (card.kind === 'choice' ? 'Question' : 'Permission') }}
         </div>
         <pre
           v-if="card.summary"
@@ -93,7 +107,7 @@ onUnmounted(() => {
         </div>
 
         <div class="notif-hint">
-          Resolve it in your terminal / Claude.
+          {{ kindHint(card) }}
         </div>
 
         <div class="notif-actions">

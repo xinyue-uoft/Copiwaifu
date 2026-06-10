@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import type { AgentType, AppBootstrap, CompletionBadge, CompletionPayload, TAgentState } from '../types/agent'
+import type { SayOptions } from '../composables/useSpeechBubble'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import { info as logInfo } from '@tauri-apps/plugin-log'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import CompletionToast from '../components/CompletionToast.vue'
 import PetContextMenu from '../components/PetContextMenu.vue'
@@ -10,7 +12,7 @@ import SpeechBubble from '../components/SpeechBubble.vue'
 import { useAgentState } from '../composables/useAgentState'
 import { useContextMenu } from '../composables/useContextMenu'
 import { useMainWindowLive2d } from '../composables/useMainWindowLive2d'
-import { limitAiTalkBubbleText, useSpeechBubble } from '../composables/useSpeechBubble'
+import { BUBBLE_CLASS, limitAiTalkBubbleText, useSpeechBubble } from '../composables/useSpeechBubble'
 import { formatAgentLabel, getLanguageCopy } from '../i18n'
 import { AGENT_STATE } from '../types/agent'
 
@@ -19,7 +21,7 @@ const props = defineProps<{
 }>()
 
 const canvasRef = ref<HTMLCanvasElement>()
-const { isVisible, displayedText, say, hide } = useSpeechBubble()
+const { isVisible, displayedText, say, hide, release } = useSpeechBubble()
 const { currentState, activeAgent, serverPort, sessionInfo } = useAgentState()
 const lastActiveAgent = ref<AgentType | null>(null)
 let idleGreetingTimer: ReturnType<typeof setInterval> | null = null
@@ -57,6 +59,14 @@ const MENU_WIDTH = 176
 const MENU_HEIGHT = 196
 const MENU_EDGE_GAP = 12
 const SAME_STATE_BUBBLE_REFRESH_COOLDOWN_MS = 4500
+/// Thinking-start and work-complete bubbles hold for ~1 min; lower-class
+/// messages (tool chatter, idle-resume) cannot displace them.
+const PINNED_BUBBLE_DURATION_MS = 60_000
+const URGENT_BUBBLE_DURATION_MS = 60_000
+
+/// Key of the urgent bubble currently announcing attention/error, so it can
+/// be released the moment the state moves on (approval handled in CC).
+let lastUrgentBubbleKey = ''
 
 const { menuState, closeMenu, openMenu } = useContextMenu({
   width: MENU_WIDTH,
@@ -89,7 +99,7 @@ const {
   getActionGroupBindings: () => props.bootstrap.settings.actionGroupBindings,
   getFallbackMotionGroups: () => props.bootstrap.modelScan.availableMotionGroups,
   onModelReady: () => {
-    say(randomGreeting(), 2800)
+    say(randomGreeting(), { duration: 2800 })
     startIdleGreetingLoop()
     void refreshCurrentState()
   },
@@ -182,15 +192,44 @@ function isAiTalkOpeningState(state: TAgentState) {
   return state === AGENT_STATE.THINKING
 }
 
-function showStateBubble(text: string, duration = 2200) {
-  lastStateBubbleShownAt = Date.now()
-  say(text, duration)
+function showBubble(text: string, opts: SayOptions & { tag: string }) {
+  const accepted = say(text, opts)
+  void logInfo(`[bubble] ${opts.tag} ${accepted ? 'shown' : 'suppressed'} cls=${opts.cls ?? BUBBLE_CLASS.TRANSIENT}`)
+  if (accepted) {
+    lastStateBubbleShownAt = Date.now()
+  }
+  return accepted
+}
+
+/// Class + key + duration for a state's bubble. Thinking/complete pin for
+/// ~60s; attention/error are urgent and break through anything.
+function bubbleIdentity(state: TAgentState): SayOptions & { tag: string } {
+  const sessionId = sessionInfo.value.sessionId ?? 'unknown'
+  const turn = sessionInfo.value.aiTalkContext?.turnIndex ?? 0
+  if (state === AGENT_STATE.NEEDS_ATTENTION) {
+    return { cls: BUBBLE_CLASS.URGENT, key: `attn:${sessionId}`, duration: URGENT_BUBBLE_DURATION_MS, tag: 'attention' }
+  }
+  if (state === AGENT_STATE.ERROR) {
+    return { cls: BUBBLE_CLASS.URGENT, key: `${sessionId}:${turn}:error`, duration: URGENT_BUBBLE_DURATION_MS, tag: 'error' }
+  }
+  if (state === AGENT_STATE.COMPLETE) {
+    return { cls: BUBBLE_CLASS.PINNED, key: `${sessionId}:${turn}:complete`, duration: PINNED_BUBBLE_DURATION_MS, tag: 'complete' }
+  }
+  if (state === AGENT_STATE.THINKING) {
+    return { cls: BUBBLE_CLASS.PINNED, key: `${sessionId}:${turn}:thinking`, duration: PINNED_BUBBLE_DURATION_MS, tag: 'thinking-start' }
+  }
+  return { tag: `state:${state}` }
 }
 
 async function showAiTalkOrFallback(state: TAgentState, fallbackText: string) {
+  const identity = bubbleIdentity(state)
+  if (identity.cls === BUBBLE_CLASS.URGENT && identity.key) {
+    lastUrgentBubbleKey = identity.key
+  }
+
   // Show the static fallback immediately so the pet doesn't freeze during the ~1-2s API call.
   if (fallbackText) {
-    showStateBubble(fallbackText)
+    showBubble(fallbackText, identity)
   }
 
   const agent = activeAgent.value ?? lastActiveAgent.value
@@ -231,8 +270,9 @@ async function showAiTalkOrFallback(state: TAgentState, fallbackText: string) {
         props.bootstrap.settings.language,
       )
       if (text) {
-        // Replace the fallback with the AI-generated bubble.
-        showStateBubble(text, 2800)
+        // Replace the fallback with the AI-generated bubble — same key and
+        // class, so it passes the pin check and inherits the full hold.
+        showBubble(text, bubbleIdentity(state))
       }
     }
   } catch (error) {
@@ -255,7 +295,7 @@ function scheduleSameStateBubbleRefresh(delay: number) {
 
     const text = stateBubbleText.value
     if (text) {
-      showStateBubble(text)
+      showBubble(text, { tag: `refresh:${currentState.value}` })
     }
   }, delay)
 }
@@ -269,7 +309,7 @@ function startIdleGreetingLoop() {
     if (currentState.value !== AGENT_STATE.IDLE) {
       return
     }
-    say(randomGreeting(), 2600)
+    say(randomGreeting(), { duration: 2600 })
   }, 18000)
 }
 
@@ -350,16 +390,29 @@ watch([currentState, stateBubbleText, aiTalkTriggerKey], ([state, text, triggerK
     clearSameStateBubbleTimer()
     aiTalkRequestToken += 1
     void playState(state)
+
+    // The urgent bubble's moment has passed (approval handled in CC, or the
+    // error turn was superseded) — drop its hold so normal messages flow.
+    if (
+      (previousState === AGENT_STATE.NEEDS_ATTENTION || previousState === AGENT_STATE.ERROR)
+      && lastUrgentBubbleKey
+    ) {
+      release(lastUrgentBubbleKey)
+      lastUrgentBubbleKey = ''
+      void logInfo('[bubble] urgent released')
+    }
   }
 
   if (state === AGENT_STATE.IDLE) {
     if (previousState && previousState !== AGENT_STATE.IDLE) {
-      showStateBubble(
+      // Transient: must NOT displace a pinned complete bubble when the
+      // session merely aged out of the navigator (60s TTL).
+      showBubble(
         ui.value.pet.idleResume(
           currentAgentLabel(),
           props.bootstrap.settings.name,
         ),
-        2600,
+        { duration: 2600, tag: 'idle-resume' },
       )
     }
     return
@@ -388,18 +441,25 @@ watch([currentState, stateBubbleText, aiTalkTriggerKey], ([state, text, triggerK
       void showAiTalkOrFallback(state, text)
       return
     }
-    // Same turn, repeated thinking event: fall through to normal static-bubble refresh logic.
+    // Same turn, repeated thinking event: fall through to the transient refresh path.
   }
 
   if (state !== previousState || isUrgentBubbleState(state)) {
     clearSameStateBubbleTimer()
-    showStateBubble(text)
+    if (state === AGENT_STATE.NEEDS_ATTENTION) {
+      const identity = bubbleIdentity(state)
+      lastUrgentBubbleKey = identity.key ?? ''
+      showBubble(text, identity)
+    }
+    else {
+      showBubble(text, { tag: `state:${state}` })
+    }
     return
   }
 
   const elapsed = Date.now() - lastStateBubbleShownAt
   if (elapsed >= SAME_STATE_BUBBLE_REFRESH_COOLDOWN_MS) {
-    showStateBubble(text)
+    showBubble(text, { tag: `refresh:${state}` })
     return
   }
 
