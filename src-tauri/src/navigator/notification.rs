@@ -205,30 +205,61 @@ fn build_completion_badges(
         .map(|s| s.session_id.as_str())
         .collect();
 
+    // Reset debounce timer when a session leaves Complete — so re-entering Complete
+    // starts a fresh 3s wait before promoting a new badge.
     state.complete_first_seen.retain(|id, _| complete_ids.contains(id.as_str()));
-    state.complete_promoted.retain(|id, _| complete_ids.contains(id.as_str()));
-    state.complete_dismissed.retain(|id| complete_ids.contains(id.as_str()));
+
+    // Expire promoted entries older than the display window (plus a 1-minute grace).
+    // Intentionally NOT retained against complete_ids: once promoted, a badge survives
+    // session state transitions (e.g. user starts a new turn) and session TTL eviction.
+    state.complete_promoted.retain(|_, entry| {
+        now.saturating_sub(entry.promoted_at_ms) < COMPLETION_BADGE_DISPLAY_MS + 60_000
+    });
 
     for session in sessions
         .sessions
         .iter()
         .filter(|s| s.state == AgentState::Complete && s.needs_attention != Some(true))
     {
-        let since = *state
-            .complete_first_seen
-            .entry(session.session_id.clone())
-            .or_insert(now);
+        use std::collections::hash_map::Entry;
+        let since = match state.complete_first_seen.entry(session.session_id.clone()) {
+            Entry::Vacant(e) => {
+                // Session just (re-)entered Complete — clear any prior dismiss so a
+                // fresh badge can appear for this new completion.
+                state.complete_dismissed.remove(&session.session_id);
+                *e.insert(now)
+            }
+            Entry::Occupied(e) => *e.get(),
+        };
+
+        eprintln!(
+            "[completion] session={} since_ms={} delta={}ms promoted={} dismissed={}",
+            &session.session_id[..8.min(session.session_id.len())],
+            since,
+            now.saturating_sub(since),
+            state.complete_promoted.contains_key(&session.session_id),
+            state.complete_dismissed.contains(&session.session_id),
+        );
 
         if now.saturating_sub(since) >= COMPLETE_DEBOUNCE_MS
-            && !state.complete_promoted.contains_key(&session.session_id)
             && !state.complete_dismissed.contains(&session.session_id)
         {
+            // Use the best available summary: ai_talk_context carries last_meaningful_summary
+            // (user's prompt or CC's result text); raw session.summary is often the fallback
+            // "等待 claude-code 操作" because CC's Stop hook payload has no result field.
+            let badge_summary = session
+                .ai_talk_context
+                .as_ref()
+                .and_then(|ctx| ctx.last_meaningful_summary.as_deref())
+                .map(str::to_string)
+                .or_else(|| session.summary.clone());
+            // Always upsert — refreshes badge content when a session completes multiple turns.
             state.complete_promoted.insert(
                 session.session_id.clone(),
                 CompletionEntry {
                     promoted_at_ms: now,
                     session_title: session.session_title.clone(),
-                    summary: session.summary.clone(),
+                    summary: badge_summary,
                 },
             );
         }
