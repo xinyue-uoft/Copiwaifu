@@ -4,9 +4,10 @@ use serde_json::{json, Value};
 
 use super::hook_helpers::{
     backup_path, claude_hook_obj, claude_settings_path, cmd_has_marker, codex_config_path,
-    copilot_settings_path, gemini_settings_path, hook_command, hook_dir, opencode_config_path,
-    opencode_config_path_new, opencode_plugin_path, read_json_or_default, runtime_dir,
-    toml_build_notify, toml_remove_notify, toml_upsert_notify, write_json, SOURCE_MARKER,
+    codex_hook_obj, codex_hooks_path, copilot_settings_path, gemini_settings_path, hook_command,
+    hook_dir, opencode_config_path, opencode_config_path_new, opencode_plugin_path,
+    read_json_or_default, runtime_dir, toml_build_notify, toml_remove_notify, toml_upsert_notify,
+    write_json, SOURCE_MARKER,
 };
 use crate::platform;
 
@@ -14,8 +15,8 @@ const COPIWAIFU_HOOK: &str = include_str!("../../../hooks/copiwaifu-hook.js");
 
 // ── Public API ────────────────────────────────────────────────────────────────
 //
-// Install targets Claude Code only. The remove_* paths for other agents are
-// kept so uninstall still scrubs traces left by older multi-agent builds.
+// Install targets Claude Code and Codex. The remove_* paths for other agents
+// are kept so uninstall still scrubs traces left by older multi-agent builds.
 
 pub fn install_hooks() -> Result<(), String> {
     let dir = hook_dir()?;
@@ -31,7 +32,12 @@ pub fn install_hooks() -> Result<(), String> {
     }
 
     install_claude_hooks(&script)?;
-    log::info!("[hooks] claude hooks installed ({} events)", CLAUDE_EVENTS.len());
+    install_codex_hooks(&script)?;
+    log::info!(
+        "[hooks] installed (claude={} events, codex={} events)",
+        CLAUDE_EVENTS.len(),
+        CODEX_EVENTS.len(),
+    );
     Ok(())
 }
 
@@ -140,34 +146,42 @@ fn install_claude_hooks(script: &Path) -> Result<(), String> {
 
     for &event in CLAUDE_EVENTS {
         let cmd = hook_command(script, "claude-code", event);
-        let entries = hooks_obj.entry(event).or_insert_with(|| json!([]));
-        if !entries.is_array() {
-            *entries = json!([]);
-        }
-        let arr = entries.as_array_mut().ok_or("not an array")?;
-
-        // Find existing copiwaifu outer entry and update its inner hook
-        let mut found = false;
-        for outer in arr.iter_mut() {
-            if let Some(inner) = outer.get_mut("hooks").and_then(Value::as_array_mut) {
-                if inner.iter().any(|h| cmd_has_marker(h)) {
-                    // Replace our hook in-place
-                    for h in inner.iter_mut() {
-                        if cmd_has_marker(h) {
-                            *h = claude_hook_obj(&cmd);
-                        }
-                    }
-                    found = true;
-                    break;
-                }
-            }
-        }
-        if !found {
-            arr.push(json!({ "matcher": "", "hooks": [claude_hook_obj(&cmd)] }));
-        }
+        upsert_command_hook(hooks_obj, event, claude_hook_obj(&cmd))?;
     }
 
     write_json(&config, &root)
+}
+
+fn upsert_command_hook(
+    hooks_obj: &mut serde_json::Map<String, Value>,
+    event: &str,
+    hook: Value,
+) -> Result<(), String> {
+    let entries = hooks_obj.entry(event).or_insert_with(|| json!([]));
+    if !entries.is_array() {
+        *entries = json!([]);
+    }
+    let arr = entries.as_array_mut().ok_or("not an array")?;
+
+    // Find existing copiwaifu outer entries and update their inner hook in-place.
+    // Keep scanning to collapse older duplicate installs into the same command.
+    let mut found = false;
+    for outer in arr.iter_mut() {
+        if let Some(inner) = outer.get_mut("hooks").and_then(Value::as_array_mut) {
+            if inner.iter().any(cmd_has_marker) {
+                for h in inner.iter_mut() {
+                    if cmd_has_marker(h) {
+                        *h = hook.clone();
+                    }
+                }
+                found = true;
+            }
+        }
+    }
+    if !found {
+        arr.push(json!({ "matcher": "", "hooks": [hook] }));
+    }
+    Ok(())
 }
 
 fn remove_claude_hooks() -> Result<(), String> {
@@ -179,6 +193,11 @@ fn remove_claude_hooks() -> Result<(), String> {
     let Some(hooks_obj) = root.get_mut("hooks").and_then(Value::as_object_mut) else {
         return Ok(());
     };
+    remove_marker_hooks_from_map(hooks_obj);
+    write_json(&config, &root)
+}
+
+fn remove_marker_hooks_from_map(hooks_obj: &mut serde_json::Map<String, Value>) {
     for entries in hooks_obj.values_mut() {
         let Some(arr) = entries.as_array_mut() else {
             continue;
@@ -192,7 +211,6 @@ fn remove_claude_hooks() -> Result<(), String> {
         });
     }
     hooks_obj.retain(|_, v| v.as_array().map(|a| !a.is_empty()).unwrap_or(true));
-    write_json(&config, &root)
 }
 
 // ── Copilot (legacy scrub only) ───────────────────────────────────────────────
@@ -215,9 +233,62 @@ fn remove_copilot_hooks() -> Result<(), String> {
     write_json(&config, &root)
 }
 
-// ── Codex (legacy scrub only) ─────────────────────────────────────────────────
+// ── Codex ─────────────────────────────────────────────────────────────────────
+
+const CODEX_EVENTS: &[&str] = &[
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "PermissionRequest",
+    "Stop",
+];
+
+fn install_codex_hooks(script: &Path) -> Result<(), String> {
+    let config = codex_hooks_path()?;
+    let mut root = read_json_or_default(&config)?;
+    if !root.is_object() {
+        root = json!({});
+    }
+
+    let hooks_map = root["hooks"]
+        .as_object_mut()
+        .map(|_| ())
+        .unwrap_or_else(|| {
+            root["hooks"] = json!({});
+        });
+    let _ = hooks_map;
+    let hooks_obj = root["hooks"]
+        .as_object_mut()
+        .ok_or("hooks is not an object")?;
+
+    for &event in CODEX_EVENTS {
+        let cmd = hook_command(script, "codex", event);
+        upsert_command_hook(hooks_obj, event, codex_hook_obj(&cmd))?;
+    }
+
+    write_json(&config, &root)
+}
 
 fn remove_codex_hooks() -> Result<(), String> {
+    remove_codex_lifecycle_hooks()?;
+    remove_codex_legacy_notify()
+}
+
+fn remove_codex_lifecycle_hooks() -> Result<(), String> {
+    let config = codex_hooks_path()?;
+    if !config.exists() {
+        return Ok(());
+    }
+    let mut root = read_json_or_default(&config)?;
+    let Some(hooks_obj) = root.get_mut("hooks").and_then(Value::as_object_mut) else {
+        return Ok(());
+    };
+    remove_marker_hooks_from_map(hooks_obj);
+    write_json(&config, &root)
+}
+
+fn remove_codex_legacy_notify() -> Result<(), String> {
     let config = codex_config_path()?;
     if !config.exists() {
         return Ok(());
@@ -306,3 +377,109 @@ fn cleanup_opencode_plugin_registration(config_path: &Path) -> Result<(), String
     write_json(config_path, &root)
 }
 
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{
+        codex_hook_obj, hook_command, remove_marker_hooks_from_map, upsert_command_hook,
+        CODEX_EVENTS,
+    };
+
+    #[test]
+    fn codex_hooks_are_merged_without_replacing_user_hooks() {
+        let script = std::path::Path::new("/Users/me/.copiwaifu/hooks/copiwaifu-hook.js");
+        let mut root = json!({
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Bash",
+                        "hooks": [
+                            { "type": "command", "command": "python3 user-policy.py" }
+                        ]
+                    }
+                ]
+            }
+        });
+        let hooks = root["hooks"].as_object_mut().expect("hooks object");
+
+        for &event in CODEX_EVENTS {
+            let cmd = hook_command(script, "codex", event);
+            upsert_command_hook(hooks, event, codex_hook_obj(&cmd)).expect("upsert");
+        }
+
+        let pre_tool = root["hooks"]["PreToolUse"].as_array().expect("PreToolUse array");
+        assert_eq!(pre_tool.len(), 2);
+        assert_eq!(pre_tool[0]["hooks"][0]["command"], "python3 user-policy.py");
+        assert_eq!(pre_tool[1]["hooks"][0]["timeout"], 5);
+        assert!(pre_tool[1]["hooks"][0]["command"]
+            .as_str()
+            .expect("command")
+            .contains("--agent codex --event PreToolUse"));
+    }
+
+    #[test]
+    fn codex_hook_upsert_updates_existing_copiwaifu_entry() {
+        let mut root = json!({
+            "hooks": {
+                "Stop": [
+                    {
+                        "matcher": "",
+                        "hooks": [
+                            { "type": "command", "command": "node /old/copiwaifu-hook.js --agent codex --event Stop" }
+                        ]
+                    }
+                ]
+            }
+        });
+        let hooks = root["hooks"].as_object_mut().expect("hooks object");
+
+        upsert_command_hook(
+            hooks,
+            "Stop",
+            codex_hook_obj("node /new/copiwaifu-hook.js --agent codex --event Stop"),
+        )
+        .expect("upsert");
+
+        let stop = root["hooks"]["Stop"].as_array().expect("Stop array");
+        assert_eq!(stop.len(), 1);
+        assert_eq!(
+            stop[0]["hooks"][0]["command"],
+            "node /new/copiwaifu-hook.js --agent codex --event Stop"
+        );
+    }
+
+    #[test]
+    fn codex_hook_remove_preserves_user_hooks() {
+        let mut root = json!({
+            "hooks": {
+                "PermissionRequest": [
+                    {
+                        "matcher": "Bash",
+                        "hooks": [
+                            { "type": "command", "command": "python3 user-policy.py" },
+                            { "type": "command", "command": "node /x/copiwaifu-hook.js --agent codex --event PermissionRequest" }
+                        ]
+                    }
+                ],
+                "Stop": [
+                    {
+                        "matcher": "",
+                        "hooks": [
+                            { "type": "command", "command": "node /x/copiwaifu-hook.js --agent codex --event Stop" }
+                        ]
+                    }
+                ]
+            }
+        });
+        let hooks = root["hooks"].as_object_mut().expect("hooks object");
+
+        remove_marker_hooks_from_map(hooks);
+
+        assert_eq!(
+            root["hooks"]["PermissionRequest"][0]["hooks"][0]["command"],
+            "python3 user-policy.py"
+        );
+        assert!(root["hooks"].get("Stop").is_none());
+    }
+}

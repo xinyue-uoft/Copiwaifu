@@ -10,8 +10,8 @@ import { onMounted, onUnmounted, ref } from 'vue'
 defineProps<{ bootstrap: AppBootstrap }>()
 
 // Passive notifications: one card per attention request — a permission
-// approval or a choice CC is waiting on. We make NO decision; the user
-// resolves it in their terminal / Claude. Cards auto-dissolve when the
+// approval or a choice an AI tool is waiting on. We make NO decision; the user
+// resolves it in their terminal / AI tool. Cards auto-dissolve when the
 // request resolves; Dismiss kills exactly this (session, epoch) instance and
 // the window hides when none remain.
 const cards = ref<NotificationCard[]>([])
@@ -27,8 +27,8 @@ function kindTag(card: NotificationCard) {
 
 function kindHint(card: NotificationCard) {
   return card.kind === 'choice'
-    ? 'Pick an option in your terminal / Claude.'
-    : 'Resolve it in your terminal / Claude.'
+    ? 'Pick an option in your terminal / AI tool.'
+    : 'Resolve it in your terminal / AI tool.'
 }
 
 function folderName(path?: string) {

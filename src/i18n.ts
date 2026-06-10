@@ -429,6 +429,9 @@ export function formatAgentLabel(agent: AgentType | null, language: AppLanguage)
   if (agent === 'claude-code') {
     return 'Claude Code'
   }
+  if (agent === 'codex') {
+    return 'Codex'
+  }
 
   return language === APP_LANGUAGE.CHINESE ? 'AI' : 'AI'
 }

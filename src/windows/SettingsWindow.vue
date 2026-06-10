@@ -534,7 +534,7 @@ function sanitizeAiTalkHeaders(headers: Record<string, string>) {
       <label class="field field--switch">
         <span>
           <strong>Show pending-permission notifications</strong>
-          <small>Pop a passive card when a Claude session is waiting for a permission decision. Resolve it in your terminal / Claude — the pet only notifies.</small>
+          <small>Pop a passive card when Claude Code or Codex is waiting for a permission decision. Resolve it in your terminal / AI tool — the pet only notifies.</small>
         </span>
         <input
           v-model="form.permissionApprovalEnabled"

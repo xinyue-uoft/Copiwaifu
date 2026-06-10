@@ -9,11 +9,11 @@
 // request has a stable identity (session_id, epoch):
 //
 //   • One popup per instance — a card appears once per epoch, after a short
-//     debounce that coalesces Notification + PermissionRequest double-fires.
+//     debounce that coalesces near-simultaneous double-fires.
 //   • Dismiss kills exactly that instance, forever. The window hides when no
 //     cards remain. A *new* request on the same session gets a new epoch and
 //     passes through normally.
-//   • Resolve — the user acts inside CC, the next event clears
+//   • Resolve — the user acts inside the AI tool, the next event clears
 //     needs_attention, and the card dissolves on its own.
 //
 // COMPLETION BADGES
@@ -288,8 +288,8 @@ fn build_completion_badges(
             continue;
         }
 
-        // Best available summary: ai_talk_context carries the real CC result
-        // text; raw session.summary is often the "等待 claude-code 操作"
+        // Best available summary: ai_talk_context carries the real tool result
+        // text; raw session.summary is often the "等待 <agent> 操作"
         // hook fallback.
         let badge_summary = session
             .ai_talk_context

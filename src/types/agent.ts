@@ -1,4 +1,4 @@
-export type AgentType = 'claude-code'
+export type AgentType = 'claude-code' | 'codex'
 
 /** Why a session waits on the user — drives popup card copy. */
 export type AttentionKind = 'permission' | 'choice'
@@ -269,6 +269,7 @@ export interface AiTalkContext {
   lastMeaningfulSummary?: string
   hasContext: boolean
   missingFields: string[]
+  events?: AiTalkEventDigest[]
 }
 
 export function createDefaultAiTalkSettings(): AiTalkSettings {
