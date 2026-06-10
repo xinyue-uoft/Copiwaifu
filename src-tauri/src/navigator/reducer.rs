@@ -25,6 +25,9 @@ pub fn reduce_session(
     session.updated_at = now;
     session.updated_at_ms = now_ms;
 
+    let prev_phase = session.phase;
+    let prev_attention = session.needs_attention;
+
     if event.event == EventType::SessionStart {
         session.phase = SessionPhase::Idle;
         session.last_event_type = None;
@@ -33,6 +36,8 @@ pub fn reduce_session(
         session.working_directory = None;
         session.session_title = None;
         session.needs_attention = Some(false);
+        session.attention_epoch = 0;
+        session.attention_kind = None;
         session.events.clear();
         session.last_meaningful_summary = None;
         session.ai_talk_context = None;
@@ -81,6 +86,10 @@ pub fn reduce_session(
             session.summary = event.data.summary.clone();
         }
         EventType::SessionEnd => {
+            log::info!(
+                "[reduce] {} session_end → removed",
+                super::short_id(&session.session_id)
+            );
             return ReduceResult { removed: true };
         }
         EventType::Thinking => {
@@ -119,14 +128,22 @@ pub fn reduce_session(
             session.needs_attention = Some(false);
         }
         EventType::Complete => {
-            if session.phase != SessionPhase::WaitingAttention {
-                session.phase = SessionPhase::Completed;
-                session.terminal_state = Some(AgentState::Complete);
-                session.tool_name = None;
-                session.needs_attention = Some(false);
-            }
+            // Stop means the turn is over — any pending permission/question is
+            // moot, so this always completes and clears attention. (The old
+            // WaitingAttention guard stranded sessions after an interrupted
+            // AskUserQuestion.)
+            session.phase = SessionPhase::Completed;
+            session.terminal_state = Some(AgentState::Complete);
+            session.tool_name = None;
+            session.needs_attention = Some(false);
         }
         EventType::NeedsAttention => {
+            // Edge-triggered epoch: one bump per continuous pending run, so a
+            // Notification + PermissionRequest double-fire for the same dialog
+            // stays a single notification instance.
+            if session.needs_attention != Some(true) {
+                session.attention_epoch += 1;
+            }
             session.phase = SessionPhase::WaitingAttention;
             session.terminal_state = None;
             session.tool_name = event
@@ -135,6 +152,9 @@ pub fn reduce_session(
                 .clone()
                 .or_else(|| session.tool_name.clone());
             session.needs_attention = Some(true);
+            if event.data.attention_kind.is_some() {
+                session.attention_kind = event.data.attention_kind;
+            }
         }
     }
 
@@ -145,12 +165,29 @@ pub fn reduce_session(
         session.needs_attention = Some(false);
     }
 
+    if session.needs_attention != Some(true) {
+        session.attention_kind = None;
+    }
+
     if !stale_after_terminal {
         session.last_event_type = Some(event.event);
         session.last_meaningful_summary = best_session_summary(session);
     }
     if !duplicate_terminal && !stale_after_terminal {
         session.ai_talk_context = Some(build_ai_talk_context(session, event.event, now_ms));
+    }
+
+    if prev_phase != session.phase || prev_attention != session.needs_attention {
+        log::info!(
+            "[reduce] {} {:?}→{:?} attn={} epoch={} turn={} ev={:?}",
+            super::short_id(&session.session_id),
+            prev_phase,
+            session.phase,
+            session.needs_attention.unwrap_or(false),
+            session.attention_epoch,
+            session.turn_index,
+            event.event,
+        );
     }
 
     ReduceResult { removed: false }
@@ -516,6 +553,8 @@ mod tests {
             working_directory: Some("/tmp/project".to_string()),
             session_title: Some("详细细化一下".to_string()),
             needs_attention: Some(false),
+            attention_epoch: 0,
+            attention_kind: None,
             events: vec![
                 digest(
                     EventType::ToolUse,

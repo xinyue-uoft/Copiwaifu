@@ -11,6 +11,9 @@ use super::{
 use crate::platform;
 
 const SESSION_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+/// Completed sessions are only restored if they finished this recently —
+/// otherwise every app start would resurrect long-gone 完工 badges.
+const COMPLETED_RESTORE_WINDOW_MS: i64 = 5 * 60 * 1000;
 
 pub fn recover(state: &mut NavigatorState) {
     let sessions_dir = match home_sessions_dir() {
@@ -25,7 +28,7 @@ pub fn recover(state: &mut NavigatorState) {
     let entries = match fs::read_dir(&sessions_dir) {
         Ok(e) => e,
         Err(err) => {
-            eprintln!("[session_recovery] read_dir failed: {err}");
+            log::warn!("[recovery] read_dir failed: {err}");
             return;
         }
     };
@@ -42,7 +45,7 @@ fn recover_session(state: &mut NavigatorState, path: &PathBuf) {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(err) => {
-            eprintln!("[session_recovery] read failed {path:?}: {err}");
+            log::warn!("[recovery] read failed {path:?}: {err}");
             return;
         }
     };
@@ -50,7 +53,7 @@ fn recover_session(state: &mut NavigatorState, path: &PathBuf) {
     let json: serde_json::Value = match serde_json::from_str(&content) {
         Ok(v) => v,
         Err(err) => {
-            eprintln!("[session_recovery] parse failed {path:?}: {err}");
+            log::warn!("[recovery] parse failed {path:?}: {err}");
             return;
         }
     };
@@ -74,6 +77,19 @@ fn recover_session(state: &mut NavigatorState, path: &PathBuf) {
         }
     }
 
+    if json["status"].as_str() == Some("completed") {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        let fresh = json["lastUpdated"]
+            .as_i64()
+            .is_some_and(|last| now_ms.saturating_sub(last) < COMPLETED_RESTORE_WINDOW_MS);
+        if !fresh {
+            return; // file stays for the 24h cull; no stale badge resurrected
+        }
+    }
+
     let session_id = match json["sessionId"].as_str() {
         Some(s) => s.to_string(),
         None => return,
@@ -81,17 +97,19 @@ fn recover_session(state: &mut NavigatorState, path: &PathBuf) {
 
     let agent = match json["agent"].as_str() {
         Some("claude-code") => AgentType::ClaudeCode,
-        Some("copilot") => AgentType::Copilot,
-        Some("codex") => AgentType::Codex,
-        Some("gemini") => AgentType::Gemini,
-        Some("opencode") => AgentType::OpenCode,
-        _ => return,
+        // Session files from agents this build no longer integrates are stale
+        // app-managed cache — clean them up like any aged session file.
+        Some(_) => {
+            let _ = fs::remove_file(path);
+            return;
+        }
+        None => return,
     };
 
+    // Never resurrect NeedsAttention across restarts: a persisted
+    // needsAttention flag says nothing about whether CC's dialog is still
+    // open, and stale ones used to produce ghost popups on every app start.
     let event_type = match json["status"].as_str() {
-        Some("working") if json["needsAttention"].as_bool().unwrap_or(false) => {
-            EventType::NeedsAttention
-        }
         Some("working") => EventType::Thinking,
         Some("error") => EventType::Error,
         Some("completed") => EventType::Complete,
@@ -111,13 +129,19 @@ fn recover_session(state: &mut NavigatorState, path: &PathBuf) {
             summary,
             working_directory: json["workingDirectory"].as_str().map(str::to_string),
             session_title: json["sessionTitle"].as_str().map(str::to_string),
-            needs_attention: json["needsAttention"].as_bool(),
+            needs_attention: Some(false),
+            attention_kind: None,
             turn_start: false,
             turn_fingerprint: None,
         },
     };
 
-    state.apply_event(event);
+    log::info!(
+        "[recovery] {} status={} restored",
+        super::short_id(&event.session_id),
+        json["status"].as_str().unwrap_or("?"),
+    );
+    state.apply_recovered_event(event);
 }
 
 fn recover_summary(json: &serde_json::Value) -> Option<String> {

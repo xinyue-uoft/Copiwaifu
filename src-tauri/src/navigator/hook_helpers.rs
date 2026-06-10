@@ -140,26 +140,11 @@ fn toml_notify_span(lines: &[&str]) -> Option<(usize, usize)> {
 }
 
 /// Extract the full notify value text (may span multiple lines).
+#[cfg(test)]
 pub fn toml_find_notify(content: &str) -> Option<String> {
     let lines: Vec<&str> = content.lines().collect();
     let (start, end) = toml_notify_span(&lines)?;
     Some(lines[start..=end].join("\n"))
-}
-
-pub fn toml_parse_array(text: &str) -> Vec<String> {
-    let start = text.find('[').unwrap_or(0) + 1;
-    let end = text.rfind(']').unwrap_or(text.len());
-    text[start..end]
-        .split(',')
-        .filter_map(|s| {
-            let t = s.trim().trim_matches('"');
-            if t.is_empty() {
-                None
-            } else {
-                Some(t.to_string())
-            }
-        })
-        .collect()
 }
 
 pub fn toml_build_notify(args: &[String]) -> String {
@@ -246,60 +231,3 @@ mod tests {
     }
 }
 
-// ── Backup ────────────────────────────────────────────────────────────────────
-
-pub fn backup_existing_hooks() -> Result<(), String> {
-    let mut backup = json!({ "claude-code": {}, "copilot": {}, "codex": {} });
-
-    if let Ok(root) = read_json_or_default(&claude_settings_path()?) {
-        if let Some(hooks) = root.get("hooks").and_then(Value::as_object) {
-            for (event, entries) in hooks {
-                if let Some(arr) = entries.as_array() {
-                    for outer in arr {
-                        if let Some(inner_hooks) = outer.get("hooks").and_then(Value::as_array) {
-                            for h in inner_hooks {
-                                if !cmd_has_marker(h) {
-                                    if let Some(cmd) = h.get("command").and_then(Value::as_str) {
-                                        backup["claude-code"][event] = json!({ "command": cmd });
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if let Ok(root) = read_json_or_default(&copilot_settings_path()?) {
-        if let Some(hooks) = root.get("hooks").and_then(Value::as_object) {
-            for (event, entries) in hooks {
-                if let Some(arr) = entries.as_array() {
-                    for entry in arr {
-                        let is_ours =
-                            entry.get("source").and_then(Value::as_str) == Some(SOURCE_MARKER);
-                        if !is_ours {
-                            if let Some(cmd) = entry.get("command").and_then(Value::as_str) {
-                                backup["copilot"][event] = json!({ "command": cmd });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let codex_path = codex_config_path()?;
-    if codex_path.exists() {
-        let content = fs::read_to_string(&codex_path).unwrap_or_default();
-        if let Some(line) = toml_find_notify(&content) {
-            let args = toml_parse_array(&line);
-            if !args.iter().any(|a| a.contains(SOURCE_MARKER)) && !args.is_empty() {
-                let arr: Vec<Value> = args.into_iter().map(|a| json!(a)).collect();
-                backup["codex"]["notify"] = Value::Array(arr);
-            }
-        }
-    }
-
-    write_json(&backup_path()?, &backup)
-}

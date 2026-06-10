@@ -1,9 +1,6 @@
 #[cfg(target_os = "macos")]
 use tauri::ActivationPolicy;
 use tauri::Manager;
-#[cfg(target_os = "macos")]
-#[allow(deprecated)]
-use tauri_nspanel::{cocoa::appkit::NSWindowCollectionBehavior, WebviewWindowExt};
 
 #[cfg(target_os = "macos")]
 use std::process::Command;
@@ -13,32 +10,9 @@ mod navigator;
 mod platform;
 mod shell;
 
-#[allow(non_upper_case_globals)]
-#[cfg(target_os = "macos")]
-const NSWindowStyleMaskNonActivatingPanel: i32 = 1 << 7;
-
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
-}
-
-#[cfg(target_os = "macos")]
-#[allow(deprecated)]
-fn elevate_desktop_pet_window(window: &tauri::WebviewWindow) -> tauri::Result<()> {
-    let panel = window.to_panel().unwrap();
-
-    panel.set_style_mask(NSWindowStyleMaskNonActivatingPanel);
-
-    panel.set_collection_behaviour(
-        NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces
-            | NSWindowCollectionBehavior::NSWindowCollectionBehaviorStationary
-            | NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary,
-    );
-
-    panel.set_level(1000); // NSScreenSaverWindowLevel
-    panel.order_front_regardless();
-
-    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -64,7 +38,28 @@ pub fn run() {
     #[cfg(target_os = "macos")]
     fix_path_env();
 
+    // Unified log file: ~/.copiwaifu/logs/copiwaifu.log (+ stdout in dev).
+    // Frontend webviews log into the same file via @tauri-apps/plugin-log.
+    let log_dir = platform::runtime_dir()
+        .map(|dir| dir.join("logs"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("logs"));
+
     let builder = tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .targets([
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Folder {
+                        path: log_dir,
+                        file_name: Some("copiwaifu".into()),
+                    }),
+                ])
+                .level(log::LevelFilter::Info)
+                .max_file_size(5_000_000)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepOne)
+                .timezone_strategy(tauri_plugin_log::TimezoneStrategy::UseLocal)
+                .build(),
+        )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init());
@@ -93,11 +88,7 @@ pub fn run() {
                 .or_else(|| app.webview_windows().into_values().next())
                 .expect("failed to find the primary webview window");
 
-            #[cfg(target_os = "macos")]
-            elevate_desktop_pet_window(&window)?;
-
-            #[cfg(not(target_os = "macos"))]
-            window.set_always_on_top(true)?;
+            platform::elevate_panel(&window)?;
 
             Ok(())
         })
@@ -106,6 +97,10 @@ pub fn run() {
             greet,
             navigator::commands::get_agent_status,
             navigator::commands::get_navigator_sessions,
+            navigator::notification::get_notifications,
+            navigator::notification::dismiss_notification,
+            navigator::notification::get_completions,
+            navigator::notification::dismiss_completion,
             ai_talk::generate_ai_talk,
             navigator::commands::uninstall_hooks,
             shell::commands::get_app_bootstrap,

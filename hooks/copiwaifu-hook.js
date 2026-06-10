@@ -1,111 +1,227 @@
 #!/usr/bin/env node
+// copiwaifu hook for Claude Code (claude-only build).
+//
+// Maps CC hook events to copiwaifu events, narrows "attention" down to real
+// permission/choice requests, POSTs to the local navigator server, and keeps
+// an append-only trace at ~/.copiwaifu/logs/hook.log so "did CC even fire the
+// hook?" is always answerable. Never throws, always exits 0.
 
 const fs = require('node:fs')
 const http = require('node:http')
 const os = require('node:os')
 const path = require('node:path')
-const { spawn } = require('node:child_process')
 
 const args = process.argv.slice(2)
 const agent = args[args.indexOf('--agent') + 1]
 const rawEvent = args[args.indexOf('--event') + 1]
-const argvJson = args.find(a => a.startsWith('{'))
 
 if (!agent || !rawEvent) process.exit(0)
 
 const CLAUDE_MAP = {
-  SessionStart: 'session_start', SessionEnd: 'session_end',
-  UserPromptSubmit: 'thinking', PreToolUse: 'tool_use',
-  PostToolUse: 'tool_result', PostToolUseFailure: 'error',
-  Stop: 'complete', Notification: 'permission_request', PermissionRequest: 'permission_request',
-  Elicitation: 'tool_use', SubagentStart: 'tool_use', SubagentStop: 'tool_use',
-  PreCompact: 'tool_use', PostCompact: 'tool_use', WorktreeCreate: 'tool_use',
-}
-const COPILOT_MAP = {
-  sessionStart: 'session_start', sessionEnd: 'session_end',
-  userPromptSubmitted: 'thinking', preToolUse: 'tool_use',
-  postToolUse: 'tool_result', errorOccurred: 'error', agentStop: 'complete',
-}
-const GEMINI_MAP = {
-  SessionStart: 'session_start', SessionEnd: 'session_end',
-  BeforeTool: 'tool_use', AfterTool: 'tool_result',
-  BeforeAgent: 'tool_use', AfterAgent: 'tool_result',
-}
-const CODEX_MAP = { notify: 'tool_use' }
-const PASSTHROUGH = new Set(['session_start','session_end','thinking','tool_use','tool_result','error','complete','permission_request'])
-
-function normalizeEvent(ev) {
-  if (PASSTHROUGH.has(ev)) return ev
-  if (agent === 'claude-code') return CLAUDE_MAP[ev] || null
-  if (agent === 'copilot') return COPILOT_MAP[ev] || null
-  if (agent === 'gemini') return GEMINI_MAP[ev] || null
-  if (agent === 'codex') return CODEX_MAP[ev] || null
-  return null
+  SessionStart: 'session_start',
+  SessionEnd: 'session_end',
+  UserPromptSubmit: 'thinking',
+  PreToolUse: 'tool_use',
+  PostToolUse: 'tool_result',
+  // A failed tool call is a normal mid-turn beat for CC, not a session error.
+  PostToolUseFailure: 'tool_result',
+  Stop: 'complete',
+  Notification: 'permission_request',
+  PermissionRequest: 'permission_request',
 }
 
+// PreToolUse on these tools means CC is waiting for the user to pick —
+// surfaced as an attention card of kind "choice".
+const CHOICE_TOOLS = new Set(['askuserquestion', 'exitplanmode'])
+
+const HOME = os.homedir()
 const PORT_FILES = [
-  path.join(os.homedir(), '.copiwaifu', 'port'),
+  path.join(HOME, '.copiwaifu', 'port'),
   path.join(os.tmpdir(), 'copiwaifu-port'),
 ]
-const SESSION_DIR = path.join(os.homedir(), '.copiwaifu', 'sessions')
-const HOOKS_FILE = path.join(os.homedir(), '.copiwaifu', 'hooks', 'original-hooks.json')
+const SESSION_DIR = path.join(HOME, '.copiwaifu', 'sessions')
+const LOG_DIR = path.join(HOME, '.copiwaifu', 'logs')
+const LOG_FILE = path.join(LOG_DIR, 'hook.log')
+const LOG_MAX_BYTES = 1024 * 1024
 
+const startedAt = Date.now()
 let handled = false
-let rawInput = ''
 
-if (agent === 'codex' && argvJson) {
-  setImmediate(() => handle(argvJson))
-} else {
-  const chunks = []
-  process.stdin.on('data', c => chunks.push(c))
-  process.stdin.on('end', () => handle(Buffer.concat(chunks).toString('utf8')))
-  setTimeout(() => handle(''), 300)
-}
+const chunks = []
+process.stdin.on('data', c => chunks.push(c))
+process.stdin.on('end', () => handle(Buffer.concat(chunks).toString('utf8')))
+setTimeout(() => handle(''), 300)
 
 function handle(input) {
   if (handled) return
   handled = true
-  rawInput = input
 
-  const ctx = parseJson(input)
-  const mappedEvent = resolveMappedEvent(ctx)
+  try {
+    run(parseJson(input))
+  } catch (err) {
+    trace(`${rawEvent}→error ${String(err && err.message || err).slice(0, 120)}`)
+    process.exit(0)
+  }
+}
+
+function run(ctx) {
+  const sessionId = ctx.session_id || ctx.sessionId || `${agent}-${process.ppid}`
+  const rawTool = pickText(ctx.tool_name, ctx.toolName)
+
+  let mappedEvent = CLAUDE_MAP[rawEvent] || null
+  let attentionKind
+
+  if (rawEvent === 'Notification') {
+    if (isIdleNotification(ctx.message)) {
+      // "Claude is waiting for your input" — idle chatter, not an approval.
+      trace(`${rawEvent}→skip sid=${sid8(sessionId)} msg=${clip(ctx.message, 60)}`)
+      return process.exit(0)
+    }
+    // Permission phrasing — and unknown Notification texts default here too
+    // (better a spurious card than a missed approval).
+    attentionKind = 'permission'
+  }
+
+  if (rawEvent === 'PermissionRequest') attentionKind = 'permission'
+
+  if (rawEvent === 'PreToolUse' && rawTool && CHOICE_TOOLS.has(rawTool.toLowerCase())) {
+    mappedEvent = 'permission_request'
+    attentionKind = 'choice'
+  }
+
   if (!mappedEvent) {
-    chainHook(agent, rawEvent, rawInput)
+    trace(`${rawEvent}→unmapped sid=${sid8(sessionId)}`)
     return process.exit(0)
   }
-  const sessionId = ctx.session_id || ctx.sessionId || ctx['thread-id'] || `${agent}-${process.ppid}`
-  const toolName = ctx.tool_name || ctx.toolName || ctx.name || agent
-  const summary = resolveSummary(ctx, agent, mappedEvent)
+
+  const needsAttention = mappedEvent === 'permission_request'
+  const summary = resolveSummary(ctx, mappedEvent, attentionKind, rawTool)
   const workingDirectory = ctx.cwd || ctx.workingDirectory || ctx.working_directory
   const sessionTitle = resolveSessionTitle(ctx, mappedEvent)
-  const needsAttention = mappedEvent === 'permission_request' || ['bash', 'execute_command'].includes(toolName.toLowerCase())
-  const turnStart = isTurnStartEvent(agent, rawEvent, mappedEvent)
+  const turnStart = mappedEvent === 'thinking' && rawEvent === 'UserPromptSubmit'
   const turnFingerprint = turnStart ? (sessionTitle || summary) : undefined
 
   const data = {
-    tool_name: toolName,
+    tool_name: rawTool,
     summary,
     working_directory: workingDirectory,
     session_title: sessionTitle,
     needs_attention: needsAttention,
+    attention_kind: attentionKind,
     turn_start: turnStart,
     turn_fingerprint: turnFingerprint,
   }
   const payload = { agent, session_id: sessionId, event: mappedEvent, data }
 
-  writeSession(sessionId, agent, mappedEvent, workingDirectory, sessionTitle, needsAttention, { type: mappedEvent, timestamp: Date.now(), toolName, summary, turnStart, turnFingerprint })
-  chainHook(agent, rawEvent, rawInput)
+  writeSession(sessionId, mappedEvent, workingDirectory, sessionTitle, needsAttention, {
+    type: mappedEvent,
+    timestamp: Date.now(),
+    toolName: rawTool,
+    summary,
+    turnStart,
+    turnFingerprint,
+  })
+
+  const tag = `${rawEvent}→${mappedEvent} sid=${sid8(sessionId)} tool=${rawTool || '-'} attn=${needsAttention ? attentionKind : '-'}`
 
   const port = readPort()
-  if (!port) return process.exit(0)
-  postJson(port, '/event', payload, 800, () => process.exit(0), () => process.exit(0))
+  if (!port) {
+    trace(`${tag} post=skip(no-port) ${Date.now() - startedAt}ms`)
+    return process.exit(0)
+  }
+
+  postJson(
+    port,
+    '/event',
+    payload,
+    800,
+    () => {
+      trace(`${tag} post=ok ${Date.now() - startedAt}ms`)
+      process.exit(0)
+    },
+    (why) => {
+      trace(`${tag} post=fail(${why}) ${Date.now() - startedAt}ms`)
+      process.exit(0)
+    },
+  )
 }
 
-function writeSession(sessionId, ag, ev, workDir, title, attention, lastEvent) {
+// ── Notification classification ───────────────────────────────────────────────
+
+function isIdleNotification(message) {
+  const msg = String(message || '').toLowerCase()
+  return /waiting for (your )?input|is idle|idle for/.test(msg)
+}
+
+// ── Summary / title extraction ────────────────────────────────────────────────
+
+const TRUNCATE_LIMITS = { complete: 512, error: 512, thinking: 180, permission_request: 200 }
+const TRUNCATE_DEFAULT = 120
+
+function resolveSummary(ctx, mappedEvent, attentionKind, rawTool) {
+  const limit = TRUNCATE_LIMITS[mappedEvent] || TRUNCATE_DEFAULT
+
+  if (attentionKind === 'choice') {
+    const input = ctx.tool_input || ctx.toolInput || {}
+    if (rawTool && rawTool.toLowerCase() === 'askuserquestion') {
+      const first = Array.isArray(input.questions) ? input.questions[0] : undefined
+      const text = first && pickText(first.question, first.header)
+      return text ? truncate(text, limit) : 'Claude has a question for you'
+    }
+    return 'Plan ready for review'
+  }
+
+  if (mappedEvent === 'thinking') {
+    const prompt = pickText(ctx.prompt, ctx.message, ctx.userPrompt, ctx.user_prompt)
+    if (prompt) return truncate(firstNonEmptyLine(prompt), limit)
+  }
+
+  if (mappedEvent === 'complete') {
+    const text = pickText(
+      ctx.summary,
+      ctx.description,
+      ctx.last_assistant_message,
+      ctx['last-assistant-message'],
+      ctx.message,
+      ctx.result,
+    )
+    if (text) return truncate(text, limit)
+  }
+
+  if (mappedEvent === 'permission_request') {
+    const text = pickText(ctx.message, ctx.prompt, ctx.reason)
+    if (text) return truncate(text, limit)
+  }
+
+  const explicit = pickText(ctx.summary, ctx.description, ctx['last-assistant-message'])
+  if (explicit) return truncate(explicit, limit)
+
+  const input = ctx.tool_input || ctx.toolInput || ctx.input
+  if (typeof input === 'string') return truncate(input, limit)
+  if (input && typeof input === 'object') {
+    const preferred = input.command || input.file_path || input.path || input.prompt || input.query
+    if (typeof preferred === 'string') return truncate(preferred, limit)
+    return truncate(JSON.stringify(input), limit)
+  }
+  return `等待 ${agent} 操作`
+}
+
+function resolveSessionTitle(ctx, mappedEvent) {
+  const limit = 180
+  if (mappedEvent === 'thinking') {
+    const prompt = pickText(ctx.prompt, ctx.message, ctx.userPrompt, ctx.user_prompt)
+    if (prompt) return truncate(firstNonEmptyLine(prompt), limit)
+  }
+  return ctx.sessionTitle ? truncate(ctx.sessionTitle, limit) : undefined
+}
+
+// ── Session file (offline record + recovery source) ──────────────────────────
+
+function writeSession(sessionId, ev, workDir, title, attention, lastEvent) {
   try {
     fs.mkdirSync(SESSION_DIR, { recursive: true })
     const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, '_')
-    const file = path.join(SESSION_DIR, `${ag}_${safeId}.json`)
+    const file = path.join(SESSION_DIR, `${agent}_${safeId}.json`)
     const existing = parseJson(tryRead(file))
     const STATUS_MAP = {
       session_start: 'idle', session_end: 'idle',
@@ -116,7 +232,6 @@ function writeSession(sessionId, ag, ev, workDir, title, attention, lastEvent) {
     const eventHistory = appendEventHistory(
       ev === 'session_start' ? [] : existing.events,
       { ...lastEvent, timestamp: lastEvent.timestamp || now },
-      ag,
       ev,
     )
     const sessionTitle = title || existing.sessionTitle
@@ -124,7 +239,7 @@ function writeSession(sessionId, ag, ev, workDir, title, attention, lastEvent) {
       || (ev === 'session_start' ? undefined : existing.lastMeaningfulSummary)
     const session = {
       sessionId,
-      agent: ag,
+      agent,
       status: STATUS_MAP[ev] || 'working',
       startedAt: existing.startedAt || now,
       lastUpdated: now,
@@ -143,7 +258,7 @@ function writeSession(sessionId, ag, ev, workDir, title, attention, lastEvent) {
   } catch {}
 }
 
-function appendEventHistory(existingEvents, event, ag, ev) {
+function appendEventHistory(existingEvents, event, ev) {
   const summary = typeof event.summary === 'string' ? truncate(event.summary.trim()) : undefined
   const toolName = typeof event.toolName === 'string' ? event.toolName.trim() : undefined
   const next = Array.isArray(existingEvents) ? existingEvents.slice(-19) : []
@@ -156,7 +271,7 @@ function appendEventHistory(existingEvents, event, ag, ev) {
     summary,
     turnStart: Boolean(event.turnStart),
     turnFingerprint: event.turnFingerprint,
-    informative: isMeaningfulSummary(summary, toolName, ag, ev),
+    informative: isMeaningfulSummary(summary, toolName, ev),
   })
   return next
 }
@@ -189,12 +304,12 @@ function summaryPriority(event) {
   return 0
 }
 
-function isMeaningfulSummary(summary, toolName, ag, ev) {
+function isMeaningfulSummary(summary, toolName, ev) {
   if (!summary || !summary.trim()) return false
   const normalized = normalizeSummary(summary)
   if (!normalized) return false
   if (normalized === normalizeSummary(toolName || '')) return false
-  if (normalized === normalizeSummary(ag) || normalized === normalizeSummary(ev)) return false
+  if (normalized === normalizeSummary(agent) || normalized === normalizeSummary(ev)) return false
   if (['idle', 'working', 'complete', 'completed', 'error', 'thinking', 'tooluse', 'toolresult'].includes(normalized)) return false
 
   const lower = summary.trim().toLowerCase()
@@ -209,103 +324,7 @@ function normalizeSummary(value) {
   return String(value || '').trim().toLowerCase().replace(/[^\p{Letter}\p{Number}]/gu, '')
 }
 
-function chainHook(ag, ev, input) {
-  try {
-    const hooks = parseJson(tryRead(HOOKS_FILE))
-    const agentHooks = hooks[ag]
-    if (!agentHooks) return
-    // Claude/Copilot already support multiple hook entries natively.
-    // Replaying their saved hooks here causes duplicate execution.
-    if (ag !== 'codex') return
-
-    const cmd = agentHooks[ev]
-    if (!Array.isArray(cmd) || !cmd.length) return
-    spawn(cmd[0], cmd.slice(1).concat([input]), { stdio: 'ignore', detached: true }).unref()
-  } catch {}
-}
-
-function resolveMappedEvent(ctx) {
-  if (agent === 'codex' && rawEvent === 'notify') {
-    return normalizeEvent(ctx.type || rawEvent)
-  }
-  return normalizeEvent(rawEvent)
-}
-
-function isTurnStartEvent(ag, ev, mappedEvent) {
-  if (mappedEvent !== 'thinking') return false
-  if (ag === 'claude-code') return ev === 'UserPromptSubmit' || ev === 'thinking'
-  if (ag === 'copilot') return ev === 'userPromptSubmitted' || ev === 'thinking'
-  return ev === 'thinking'
-}
-
-function resolveSessionTitle(ctx, mappedEvent) {
-  const limit = 180
-  const msgs = ctx['input-messages']
-  if (Array.isArray(msgs)) {
-    const first = msgs.find(m => m.role === 'user')
-    const content = first?.content
-    if (typeof content === 'string') return truncate(content, limit)
-    if (Array.isArray(content)) {
-      const text = content.find(c => c.type === 'text')?.text
-      if (text) return truncate(text, limit)
-    }
-  }
-  if (mappedEvent === 'thinking') {
-    const prompt = pickText(ctx.prompt, ctx.message, ctx.userPrompt, ctx.user_prompt)
-    if (prompt) return truncate(firstNonEmptyLine(prompt), limit)
-  }
-  return ctx.sessionTitle ? truncate(ctx.sessionTitle, limit) : undefined
-}
-
-function resolveSummary(ctx, ag, mappedEvent) {
-  const limit = TRUNCATE_LIMITS[mappedEvent] || TRUNCATE_DEFAULT
-  const agentSummary = ag === 'claude-code' ? resolveClaudeSummary(ctx, mappedEvent) : undefined
-  if (agentSummary) return truncate(agentSummary, limit)
-
-  const explicit = pickText(
-    ctx.summary,
-    ctx.description,
-    ctx['last-assistant-message'],
-    ctx.prompt,
-    ctx.message,
-  )
-  if (explicit) return truncate(explicit, limit)
-  const input = ctx.tool_input || ctx.toolInput || ctx.input
-  if (typeof input === 'string') return truncate(input, limit)
-  if (input && typeof input === 'object') {
-    const preferred = input.command || input.file_path || input.path || input.prompt || input.query
-    if (typeof preferred === 'string') return truncate(preferred, limit)
-    return truncate(JSON.stringify(input), limit)
-  }
-  return `等待 ${ag} 操作`
-}
-
-function resolveClaudeSummary(ctx, mappedEvent) {
-  if (mappedEvent === 'thinking') {
-    return pickText(ctx.prompt, ctx.message, ctx.userPrompt, ctx.user_prompt)
-  }
-
-  if (mappedEvent === 'complete') {
-    return pickText(
-      ctx.summary,
-      ctx.description,
-      ctx.last_assistant_message,
-      ctx['last-assistant-message'],
-      ctx.message,
-      ctx.result,
-    )
-  }
-
-  if (mappedEvent === 'error') {
-    return pickText(ctx.error, ctx.message, ctx.summary, ctx.description)
-  }
-
-  if (mappedEvent === 'permission_request') {
-    return pickText(ctx.message, ctx.prompt, ctx.reason)
-  }
-
-  return undefined
-}
+// ── Small utilities ───────────────────────────────────────────────────────────
 
 function pickText(...values) {
   for (const value of values) {
@@ -320,14 +339,37 @@ function firstNonEmptyLine(value) {
   return value.split(/\r?\n/).map(line => line.trim()).find(Boolean) || value.trim()
 }
 
-const TRUNCATE_LIMITS = { complete: 512, error: 512, thinking: 180 }
-const TRUNCATE_DEFAULT = 120
 function truncate(v, limit) {
   const max = limit || TRUNCATE_DEFAULT
   return v.length > max ? `${v.slice(0, max)}...` : v
 }
+
+function clip(value, max) {
+  return String(value || '').replace(/\s+/g, ' ').slice(0, max)
+}
+
+function sid8(id) {
+  return String(id).slice(0, 8)
+}
+
 function parseJson(s) { try { return JSON.parse(s) } catch { return {} } }
 function tryRead(f) { try { return fs.readFileSync(f, 'utf8') } catch { return '{}' } }
+
+// ── Trace log (~/.copiwaifu/logs/hook.log, 1MB self-rotation) ────────────────
+
+function trace(line) {
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive: true })
+    try {
+      if (fs.statSync(LOG_FILE).size > LOG_MAX_BYTES) {
+        fs.renameSync(LOG_FILE, `${LOG_FILE}.1`)
+      }
+    } catch {}
+    fs.appendFileSync(LOG_FILE, `${new Date().toISOString()} ${line}\n`)
+  } catch {}
+}
+
+// ── Transport ─────────────────────────────────────────────────────────────────
 
 function readPort() {
   for (const f of PORT_FILES) {
@@ -344,8 +386,11 @@ function postJson(port, route, payload, timeout, onSuccess, onFailure) {
   const req = http.request({
     host: '127.0.0.1', port, path: route, method: 'POST', timeout,
     headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-  }, (res) => { res.resume(); res.statusCode >= 200 && res.statusCode < 300 ? onSuccess() : onFailure() })
-  req.on('error', onFailure)
-  req.on('timeout', () => { req.destroy(); onFailure() })
+  }, (res) => {
+    res.resume()
+    res.statusCode >= 200 && res.statusCode < 300 ? onSuccess() : onFailure(`http-${res.statusCode}`)
+  })
+  req.on('error', err => onFailure(err.code || 'error'))
+  req.on('timeout', () => { req.destroy(); onFailure('timeout') })
   req.end(body)
 }

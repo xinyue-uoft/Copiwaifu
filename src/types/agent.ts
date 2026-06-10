@@ -1,4 +1,7 @@
-export type AgentType = 'claude-code' | 'copilot' | 'codex' | 'gemini' | 'opencode'
+export type AgentType = 'claude-code'
+
+/** Why a session waits on the user — drives popup card copy. */
+export type AttentionKind = 'permission' | 'choice'
 
 export const APP_LANGUAGE = {
   ENGLISH: 'english',
@@ -81,6 +84,7 @@ export interface AppSettings {
   name: string
   language: AppLanguage
   autoStart: boolean
+  permissionApprovalEnabled: boolean
   modelDirectory: string | null
   windowSize: WindowSizePreset
   actionGroupBindings: Record<TAgentState, string | null>
@@ -232,6 +236,8 @@ export interface NavigatorSessionInfo {
   working_directory?: string
   session_title?: string
   needs_attention?: boolean
+  attention_epoch: number
+  attention_kind?: AttentionKind
   ai_talk_context?: AiTalkContext
 }
 
@@ -275,4 +281,32 @@ export function createDefaultAiTalkSettings(): AiTalkSettings {
     headers: {},
     providerProfiles: {},
   }
+}
+
+export interface NotificationCard {
+  session_id: string
+  agent: string
+  /** Identifies one concrete attention request — echoed back on Dismiss. */
+  epoch: number
+  kind?: AttentionKind
+  tool_name?: string
+  summary?: string
+  working_directory?: string
+  session_title?: string
+}
+
+export interface NotificationPayload {
+  cards: NotificationCard[]
+}
+
+export interface CompletionBadge {
+  session_id: string
+  session_title?: string
+  /// Last meaningful summary from CC — shown as the completion message.
+  summary?: string
+  promoted_at_ms: number
+}
+
+export interface CompletionPayload {
+  badges: CompletionBadge[]
 }

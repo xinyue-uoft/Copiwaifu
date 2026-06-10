@@ -21,7 +21,7 @@ pub fn start_cleanup_loop(app_handle: AppHandle, state: Arc<Mutex<NavigatorState
         let emissions = match state.lock() {
             Ok(mut navigator) => navigator.cleanup_stale(),
             Err(err) => {
-                eprintln!("navigator cleanup lock poisoned: {err}");
+                log::warn!("[reduce] cleanup lock poisoned: {err}");
                 continue;
             }
         };

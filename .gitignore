@@ -21,6 +21,15 @@ dist-ssr
 # Sidecar build output
 sidecar/ai-runtime/bundle/
 
+# Backup files
+hooks/*.bak.*
+
+# Additional Live2D models (not bundled)
+public/Resources/林翩翩/
+
+# Local design / planning docs
+docs/plan-pet-permission-approval.md
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
