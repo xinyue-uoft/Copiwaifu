@@ -430,5 +430,9 @@ export function formatAgentLabel(agent: AgentType | null, language: AppLanguage)
     return 'Claude Code'
   }
 
+  if (agent === 'opencode') {
+    return 'OpenCode'
+  }
+
   return language === APP_LANGUAGE.CHINESE ? 'AI' : 'AI'
 }

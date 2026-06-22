@@ -97,6 +97,7 @@ fn recover_session(state: &mut NavigatorState, path: &PathBuf) {
 
     let agent = match json["agent"].as_str() {
         Some("claude-code") => AgentType::ClaudeCode,
+        Some("opencode") => AgentType::OpenCode,
         // Session files from agents this build no longer integrates are stale
         // app-managed cache — clean them up like any aged session file.
         Some(_) => {

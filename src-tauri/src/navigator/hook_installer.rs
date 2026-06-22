@@ -5,12 +5,14 @@ use serde_json::{json, Value};
 use super::hook_helpers::{
     backup_path, claude_hook_obj, claude_settings_path, cmd_has_marker, codex_config_path,
     copilot_settings_path, gemini_settings_path, hook_command, hook_dir, opencode_config_path,
-    opencode_config_path_new, opencode_plugin_path, read_json_or_default, runtime_dir,
+    opencode_config_path_new, opencode_plugin_dir, opencode_plugin_path, read_json_or_default,
+    register_opencode_plugin, runtime_dir,
     toml_build_notify, toml_remove_notify, toml_upsert_notify, write_json, SOURCE_MARKER,
 };
 use crate::platform;
 
 const COPIWAIFU_HOOK: &str = include_str!("../../../hooks/copiwaifu-hook.js");
+const COPIWAIFU_OPENCODE_PLUGIN: &str = include_str!("../../../hooks/copiwaifu-opencode.js");
 
 // ── Public API ────────────────────────────────────────────────────────────────
 //
@@ -32,6 +34,9 @@ pub fn install_hooks() -> Result<(), String> {
 
     install_claude_hooks(&script)?;
     log::info!("[hooks] claude hooks installed ({} events)", CLAUDE_EVENTS.len());
+
+    install_opencode_plugin()?;
+    log::info!("[hooks] opencode plugin installed");
     Ok(())
 }
 
@@ -273,7 +278,29 @@ fn remove_gemini_hooks() -> Result<(), String> {
     write_json(&config, &root)
 }
 
-// ── OpenCode (legacy scrub only) ──────────────────────────────────────────────
+// ── OpenCode ──────────────────────────────────────────────────────────────────
+
+fn install_opencode_plugin() -> Result<(), String> {
+    let plugin_dir = opencode_plugin_dir()?;
+    fs::create_dir_all(&plugin_dir).map_err(|e| e.to_string())?;
+
+    let plugin_path = opencode_plugin_path()?;
+    fs::write(&plugin_path, COPIWAIFU_OPENCODE_PLUGIN).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&plugin_path, fs::Permissions::from_mode(0o755))
+            .map_err(|e| e.to_string())?;
+    }
+
+    let abs = plugin_path
+        .to_str()
+        .ok_or("opencode plugin path is not utf-8")?;
+    register_opencode_plugin(&opencode_config_path_new()?, abs)?;
+    // Legacy config.json path — older opencode builds read this instead of opencode.json.
+    register_opencode_plugin(&opencode_config_path()?, abs)?;
+    Ok(())
+}
 
 fn remove_opencode_plugin() -> Result<(), String> {
     let plugin_path = opencode_plugin_path()?;
