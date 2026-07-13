@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Copiwaifu 是一个基于 Tauri 2 + Vue 3 的 macOS 桌面宠物应用。它使用内置的 Yulia Live2D 模型展示 AI 编程工具状态，并通过本地 hooks 同步 Claude Code、GitHub Copilot、Codex、Gemini CLI 和 OpenCode 的会话事件。
+Copiwaifu 是一个基于 Tauri 2 + Vue 3 的 macOS 桌面宠物应用。它使用内置的 Yulia Live2D 模型展示 AI 编程工具状态，并通过本地 hooks / extensions 同步 Claude Code、OpenCode 和 Pi 的会话事件。
 
 当前分支新增 AI Talk：当原 AI CLI 的一轮 session 进入 `complete` 或 `error` 后，应用可以基于已保存的 session 元信息和摘要调用用户配置的模型服务，生成一句适合桌宠气泡展示的短反馈。AI Talk 不是主动聊天窗口，也不会读取完整对话、项目文件或源码。
 
@@ -71,7 +71,7 @@ pnpm eslint .
 
 ### Hooks And Runtime Data
 
-- Hook scripts live in `hooks/` and are installed into local AI CLI config files.
+- Hook scripts/extensions live in `hooks/`; Claude Code and OpenCode are installed from there, while Pi is installed as `~/.pi/agent/extensions/copiwaifu.ts`.
 - Original hook definitions are backed up to `~/.copiwaifu/hooks/original-hooks.json`.
 - Runtime session snapshots and AI Talk metadata are written to `~/.copiwaifu/sessions`.
 - Port discovery writes under `~/.copiwaifu` and also uses `/tmp/copiwaifu-port` as a fallback.

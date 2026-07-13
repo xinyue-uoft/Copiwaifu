@@ -1,7 +1,8 @@
 use super::events::EventType;
 
-/// Canonical event names POSTed by hooks/copiwaifu-hook.js, plus the raw
-/// Claude Code hook names as a courtesy so manual curl tests work unchanged.
+/// Canonical event names POSTed by Copiwaifu's Claude Code hook, OpenCode
+/// plugin, and Pi extension, plus raw Claude Code hook names as a courtesy so
+/// manual curl tests work unchanged.
 ///
 /// Note: `PostToolUseFailure` lands on ToolResult — a failed tool call is a
 /// normal mid-turn beat for Claude Code, not a session-level error.

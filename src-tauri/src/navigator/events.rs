@@ -2,18 +2,24 @@ use serde::{Deserialize, Serialize};
 
 use super::providers;
 
-/// copiwaifu only integrates Claude Code. The enum is kept (single variant)
-/// so wire formats and session files stay explicit about their source.
+/// Agents copiwaifu integrates. The wire format and session files use the
+/// kebab form; OpenCode is a single word so it gets an explicit rename
+/// (otherwise kebab-case would yield "open-code").
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AgentType {
     ClaudeCode,
+    #[serde(rename = "opencode")]
+    OpenCode,
+    Pi,
 }
 
 impl AgentType {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::ClaudeCode => "claude-code",
+            Self::OpenCode => "opencode",
+            Self::Pi => "pi",
         }
     }
 }

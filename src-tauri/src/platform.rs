@@ -41,10 +41,8 @@ const NS_NON_ACTIVATING_PANEL: i32 = 1 << 7;
 /// notification window (the latter's Dismiss button needs the clicks).
 #[cfg(target_os = "macos")]
 #[allow(deprecated)]
-pub fn elevate_panel(window: &tauri::WebviewWindow) -> tauri::Result<()> {
-    use tauri_nspanel::{cocoa::appkit::NSWindowCollectionBehavior, WebviewWindowExt};
-
-    let panel = window.to_panel().unwrap();
+fn configure_panel(panel: &tauri_nspanel::Panel) {
+    use tauri_nspanel::cocoa::appkit::NSWindowCollectionBehavior;
 
     panel.set_style_mask(NS_NON_ACTIVATING_PANEL);
     panel.set_collection_behaviour(
@@ -53,6 +51,36 @@ pub fn elevate_panel(window: &tauri::WebviewWindow) -> tauri::Result<()> {
             | NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary,
     );
     panel.set_level(1000); // NSScreenSaverWindowLevel
+}
+
+#[cfg(target_os = "macos")]
+#[allow(deprecated)]
+pub fn elevate_panel(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    use tauri_nspanel::WebviewWindowExt;
+
+    let panel = window.to_panel()?;
+
+    configure_panel(&panel);
+    panel.order_front_regardless();
+    Ok(())
+}
+
+/// Show a hidden floating panel without making it key / stealing keyboard focus.
+#[cfg(target_os = "macos")]
+#[allow(deprecated)]
+pub fn show_without_focus(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    use tauri::Manager;
+    use tauri_nspanel::{ManagerExt, WebviewWindowExt};
+
+    let panel = match window.app_handle().get_webview_panel(window.label()) {
+        Ok(panel) => panel,
+        Err(_) => {
+            let panel = window.to_panel()?;
+            configure_panel(&panel);
+            panel
+        }
+    };
+
     panel.order_front_regardless();
     Ok(())
 }
@@ -60,4 +88,9 @@ pub fn elevate_panel(window: &tauri::WebviewWindow) -> tauri::Result<()> {
 #[cfg(not(target_os = "macos"))]
 pub fn elevate_panel(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     window.set_always_on_top(true)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn show_without_focus(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    window.show()
 }

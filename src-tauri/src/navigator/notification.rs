@@ -477,7 +477,9 @@ fn ensure_window(app_handle: &AppHandle) {
             // call, producing the "keyboard blocked" symptom.
             if !window.is_visible().unwrap_or(false) {
                 log::info!("[window] notification show");
-                let _ = window.show();
+                if let Err(err) = crate::platform::show_without_focus(&window) {
+                    log::warn!("[window] notification show failed: {err}");
+                }
             }
             return;
         }
@@ -494,6 +496,7 @@ fn ensure_window(app_handle: &AppHandle) {
         .always_on_top(true)
         .skip_taskbar(true)
         .focused(false)
+        .visible(false)
         .build()
         {
             Ok(window) => {

@@ -29,6 +29,7 @@ public/Resources/林翩翩/
 
 # Local design / planning docs
 docs/plan-pet-permission-approval.md
+.pi-subagents/
 
 # Editor directories and files
 .vscode/*

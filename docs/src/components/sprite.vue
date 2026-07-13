@@ -13,15 +13,15 @@ const bubbleY = ref<number>()
 const bubbleLines = [
   'Ciallo ～(∠・ω< )⌒★!',
   'わたしはあなたのLive2D AIナビゲーターだよ、えへへ😋 ',
-  '長官！Claude、Copilot、Codex、Gemini、OpenCodeと同期完了です。',
+  '長官！Claude Code、OpenCode、Piと同期完了です。',
   'AI Talkで任務完了の短い報告もできます。',
   '一緒にこの世界を変えましょう！',
   '我是你的 Live2D AI 领航员，嘻嘻😋 ',
-  '长官！Claude、Copilot、Codex、Gemini、OpenCode 都同步完成。',
+  '长官！Claude Code、OpenCode、Pi 都同步完成。',
   'AI Talk 还能在任务完成后生成一句短报告。',
   '让我们一起改变这个世界吧！',
   'I\'m your Live2D AI Navigator, hehe😋 ',
-  'Commander! Claude, Copilot, Codex, Gemini, and OpenCode are synced.',
+  'Commander! Claude Code, OpenCode, and Pi are synced.',
   'AI Talk can add a short report after each finished turn.',
   'Let\'s change the world together!',
 ]

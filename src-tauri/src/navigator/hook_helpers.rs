@@ -39,6 +39,14 @@ pub fn gemini_settings_path() -> Result<PathBuf, String> {
     Ok(home_dir()?.join(".gemini").join("settings.json"))
 }
 
+pub fn pi_extension_dir() -> Result<PathBuf, String> {
+    Ok(home_dir()?.join(".pi").join("agent").join("extensions"))
+}
+
+pub fn pi_extension_path() -> Result<PathBuf, String> {
+    Ok(pi_extension_dir()?.join("copiwaifu.ts"))
+}
+
 pub fn opencode_plugin_dir() -> Result<PathBuf, String> {
     Ok(home_dir()?.join(".config").join("opencode").join("plugins"))
 }
@@ -81,6 +89,49 @@ pub fn write_json(path: &std::path::Path, value: &Value) -> Result<(), String> {
     }
     let body = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
     fs::write(path, body).map_err(|e| e.to_string())
+}
+
+// ── OpenCode plugin registration ──────────────────────────────────────────────
+
+/// Upsert the copiwaifu plugin path in an opencode config's `plugin` array.
+/// Inverse of `cleanup_opencode_plugin_registration` (hook_installer.rs):
+/// inserts or refreshes the absolute plugin path, which carries SOURCE_MARKER
+/// so cleanup can find and remove it later.
+pub fn register_opencode_plugin(
+    config_path: &std::path::Path,
+    plugin_abs_path: &str,
+) -> Result<(), String> {
+    let mut root = read_json_or_default(config_path)?;
+    if !root.is_object() {
+        root = json!({});
+    }
+    if root
+        .get_mut("plugin")
+        .and_then(Value::as_array_mut)
+        .is_none()
+    {
+        root["plugin"] = json!([]);
+    }
+    let arr = root["plugin"]
+        .as_array_mut()
+        .ok_or("plugin is not an array")?;
+
+    let mut found = false;
+    for entry in arr.iter_mut() {
+        if entry
+            .as_str()
+            .map(|v| v.contains(SOURCE_MARKER))
+            .unwrap_or(false)
+        {
+            *entry = json!(plugin_abs_path);
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        arr.push(json!(plugin_abs_path));
+    }
+    write_json(config_path, &root)
 }
 
 // ── Command builders ──────────────────────────────────────────────────────────

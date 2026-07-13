@@ -112,6 +112,13 @@ pub fn run() {
             shell::commands::toggle_main_window_visibility,
             shell::commands::exit_app
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                if let Err(err) = navigator::hook_installer::uninstall_hooks() {
+                    log::error!("[hooks] shutdown cleanup failed: {err}");
+                }
+            }
+        });
 }
