@@ -4,7 +4,7 @@
 
 你的 Live2D AI 桌面导航娘。
 
-Copiwaifu 是一个基于 Tauri 的桌宠应用，会把 AI 编程工具的运行状态同步成桌面上的 Live2D 角色反馈。目前主要对接 Claude Code、GitHub Copilot、Codex、Gemini CLI 和 OpenCode，并支持在一轮任务完成后基于已保存的 session 元信息生成可选的 AI Talk 气泡反馈。
+Copiwaifu 是一个基于 Tauri 的桌宠应用，会把 AI 编程工具的运行状态同步成桌面上的 Live2D 角色反馈。目前主要对接 Claude Code、OpenCode 和 Pi，并支持在一轮任务完成后基于已保存的 session 元信息生成可选的 AI Talk 气泡反馈。
 
 ## 官网
 
@@ -39,18 +39,16 @@ xattr -dr com.apple.quarantine /Applications/copiwaifu.app
 应用启动后会执行这几件事：
 
 1. 在本机 `127.0.0.1` 上启动一个 HTTP 服务，默认从端口 `23333` 开始监听，端口被占用时会继续尝试后续端口。
-2. 为受支持的 AI CLI 安装本地 hooks。
+2. 为受支持的 AI harness 安装本地 hooks / extension。
 3. 接收 hook 上报的事件，并转换成 Copiwaifu 内部状态。
 4. 把运行时数据写入 `~/.copiwaifu`，其中 session 摘要会写入 `~/.copiwaifu/sessions`。
 5. 当 AI Talk 已开启，且完成或失败的一轮任务有足够上下文时，通过 Vercel AI SDK 调用本地 AI runtime，并用生成短句替换静态的 complete/error 气泡。
 
-当前会接入这些本地配置文件：
+当前会接入这些本地配置：
 
 - Claude Code：`~/.claude/settings.json`
-- GitHub Copilot：`~/.config/github-copilot/config.json`
-- Codex：`~/.codex/config.toml`
-- Gemini CLI：`~/.gemini/settings.json`
 - OpenCode：`~/.config/opencode/opencode.json`
+- Pi：全局 extension `~/.pi/agent/extensions/copiwaifu.ts`
 
 原有 hook 配置会备份到 `~/.copiwaifu/hooks/original-hooks.json`。
 
@@ -61,7 +59,6 @@ Copiwaifu 现在保留 macOS 的原生桌宠窗口增强，同时补齐 Windows 
 - macOS：继续使用 `tauri-nspanel`、隐藏 Dock、全空间显示等 macOS 专有能力。
 - Windows：不加载 macOS 专用插件，使用 Tauri 标准透明无边框置顶窗口、系统托盘和开机自启插件。
 - hooks 和运行时文件会优先写入用户目录下的 `.copiwaifu`，端口兜底文件会写入系统临时目录，避免硬编码 `/tmp`。
-- Codex `notify` 配置会按 TOML 字符串转义 Windows 反斜杠路径。
 
 Windows 维护说明见 [docs/WINDOWS.zh-CN.md](docs/WINDOWS.zh-CN.md)。
 

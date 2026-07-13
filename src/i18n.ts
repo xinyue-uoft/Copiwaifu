@@ -121,7 +121,7 @@ const LANGUAGE_COPY: Record<AppLanguage, LanguageCopy> = {
       autoStartLabel: 'Launch at Login',
       autoStartHint: 'After saving, this will sync with the system login launch setting so she can boot up with you.',
       aiTalkLabel: 'AI Talk',
-      aiTalkHint: 'Copiwaifu can engage in interesting chat interactions based on the conversation context of your AI tools like CC and Codex.',
+      aiTalkHint: 'Copiwaifu can engage in interesting chat interactions based on the conversation context of AI tools like Claude Code, OpenCode, and Pi.',
       aiTalkProviderLabel: 'Provider',
       aiTalkModelLabel: 'Model ID',
       aiTalkModelPlaceholder: 'gpt-4o-mini',
@@ -192,7 +192,7 @@ const LANGUAGE_COPY: Record<AppLanguage, LanguageCopy> = {
         `Commander! ${name} is on station and ready to watch over your AI sessions today.`,
         `${name} is on standby. Just give the order and I will get to work.`,
         `${name} will keep an eye on tool status and approval requests so nothing runs wild.`,
-        'Commander! We have finished syncing with CC, Codex, and Copilot.',
+        'Commander! We have finished syncing with Claude Code, OpenCode, and Pi.',
         'Let us change this world together!',
       ],
       thinking: (agentLabel, name) => `[${agentLabel}] ${name}'s thought circuits are spinning at full speed...`,
@@ -228,7 +228,7 @@ const LANGUAGE_COPY: Record<AppLanguage, LanguageCopy> = {
       autoStartLabel: '开机自启',
       autoStartHint: '保存后会和系统登录启动状态同步，让她陪你一起开机报到。',
       aiTalkLabel: 'AI Talk',
-      aiTalkHint: 'Copiwaifu 可以基于你的CC、Codex等AI工具的回话上下文来进行有意思的聊天互动。',
+      aiTalkHint: 'Copiwaifu 可以基于 Claude Code、OpenCode 和 Pi 的对话上下文进行有意思的聊天互动。',
       aiTalkProviderLabel: '模型供应商',
       aiTalkModelLabel: '模型 ID',
       aiTalkModelPlaceholder: 'gpt-4o-mini',
@@ -299,7 +299,7 @@ const LANGUAGE_COPY: Record<AppLanguage, LanguageCopy> = {
         `主人！${name} 已经到岗，今天也由我来守着你的 AI 会话。`,
         `${name} 待机中，主人一声令下我就开工。`,
         `${name} 会帮你盯住工具状态和授权请求，不会让它们乱跑。`,
-        '主人！我们已经与CC、Codex、Copilot同步完成。',
+        '主人！我们已经与 Claude Code、OpenCode、Pi 同步完成。',
         '让我们一起改变这个世界吧！',
       ],
       thinking: (agentLabel, name) => `${name}正看着[${agentLabel}]全力思考...`,
@@ -335,7 +335,7 @@ const LANGUAGE_COPY: Record<AppLanguage, LanguageCopy> = {
       autoStartLabel: 'ログイン時に起動',
       autoStartHint: '保存後、システムのログイン起動設定と同期し、起動時に一緒に立ち上がります。',
       aiTalkLabel: 'AI Talk',
-      aiTalkHint: 'Copiwaifu はあなたの CC、Codex などの AI ツールの会話コンテキストに基づいて、面白いチャットインタラクションを行うことができます。',
+      aiTalkHint: 'Copiwaifu は Claude Code、OpenCode、Pi などの AI ツールの会話コンテキストに基づいて、面白いチャットインタラクションを行うことができます。',
       aiTalkProviderLabel: 'プロバイダー',
       aiTalkModelLabel: 'モデル ID',
       aiTalkModelPlaceholder: 'gpt-4o-mini',
@@ -406,7 +406,7 @@ const LANGUAGE_COPY: Record<AppLanguage, LanguageCopy> = {
         `指揮官！${name} は配置につきました。今日も AI セッションを見守ります。`,
         `${name} は待機中です。命令があればすぐに動きます。`,
         `${name} がツールの状態と承認リクエストを見張って、暴走しないようにします。`,
-        '指揮官！CC、Codex、Copilot との同期が完了しました。',
+        '指揮官！Claude Code、OpenCode、Pi との同期が完了しました。',
         '一緒にこの世界を変えていきましょう！',
       ],
       thinking: (agentLabel, name) => `[${agentLabel}] ${name} の思考回路がフル回転しています...`,
@@ -432,6 +432,10 @@ export function formatAgentLabel(agent: AgentType | null, language: AppLanguage)
 
   if (agent === 'opencode') {
     return 'OpenCode'
+  }
+
+  if (agent === 'pi') {
+    return 'Pi'
   }
 
   return language === APP_LANGUAGE.CHINESE ? 'AI' : 'AI'

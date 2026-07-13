@@ -4,7 +4,7 @@
 
 日々のコーディングを見守る Live2D AI ナビゲーター。
 
-Copiwaifu は Tauri ベースのデスクトップペットです。AI コーディングツールの状態をデスクトップ上の小さな Live2D キャラクターに同期して表示します。現在は Claude Code、GitHub Copilot、Codex、Gemini CLI、OpenCode との同期を主な対象にしており、コーディングターン完了後に保存済みセッションメタデータから AI Talk の吹き出しを生成することもできます。
+Copiwaifu は Tauri ベースのデスクトップペットです。AI コーディングツールの状態をデスクトップ上の小さな Live2D キャラクターに同期して表示します。現在は Claude Code、OpenCode、Pi との同期を主な対象にしており、コーディングターン完了後に保存済みセッションメタデータから AI Talk の吹き出しを生成することもできます。
 
 ## 公式サイト
 
@@ -39,18 +39,16 @@ xattr -dr com.apple.quarantine /Applications/copiwaifu.app
 アプリ起動時に次の処理を行います。
 
 1. `127.0.0.1` でローカル HTTP サーバーを起動し、既定ではポート `23333` を使い、使用中なら次の空きポートを順に試します。
-2. 対応する AI CLI にローカル hooks をインストールします。
+2. 対応する AI harness にローカル hooks / extension をインストールします。
 3. hook イベントを受け取り、Copiwaifu の状態に変換します。
 4. 実行時データを `~/.copiwaifu` に保存し、セッション要約は `~/.copiwaifu/sessions` に書き込みます。
 5. AI Talk が有効で、完了または失敗したターンに十分なコンテキストがある場合、Vercel AI SDK 経由でローカル AI runtime を実行し、静的な complete/error 吹き出しを生成文に差し替えます。
 
-現在 hook を導入する設定ファイルは次のとおりです。
+現在 hook / extension を導入する設定は次のとおりです。
 
 - Claude Code: `~/.claude/settings.json`
-- GitHub Copilot: `~/.config/github-copilot/config.json`
-- Codex: `~/.codex/config.toml`
-- Gemini CLI: `~/.gemini/settings.json`
 - OpenCode: `~/.config/opencode/opencode.json`
+- Pi: グローバル extension `~/.pi/agent/extensions/copiwaifu.ts`
 
 元の hook 定義は `~/.copiwaifu/hooks/original-hooks.json` にバックアップされます。
 
@@ -61,7 +59,6 @@ Copiwaifu は macOS のネイティブなデスクトップペット向けウィ
 - macOS: 引き続き `tauri-nspanel`、Dock 非表示、全スペース表示などの macOS 専用機能を使います。
 - Windows: macOS 専用プラグインは読み込まず、Tauri 標準の透明・枠なし・常時前面ウィンドウ、システムトレイ、自動起動プラグインを使います。
 - hook と実行時ファイルはユーザーディレクトリ配下の `.copiwaifu` を優先し、予備のポートファイルは固定の `/tmp` ではなくシステム一時ディレクトリへ書き込みます。
-- Codex `notify` 設定では、Windows のバックスラッシュを TOML 文字列として正しくエスケープします。
 
 Windows の保守メモは [docs/WINDOWS.zh-CN.md](docs/WINDOWS.zh-CN.md) にあります。
 

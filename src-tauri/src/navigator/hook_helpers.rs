@@ -39,6 +39,14 @@ pub fn gemini_settings_path() -> Result<PathBuf, String> {
     Ok(home_dir()?.join(".gemini").join("settings.json"))
 }
 
+pub fn pi_extension_dir() -> Result<PathBuf, String> {
+    Ok(home_dir()?.join(".pi").join("agent").join("extensions"))
+}
+
+pub fn pi_extension_path() -> Result<PathBuf, String> {
+    Ok(pi_extension_dir()?.join("copiwaifu.ts"))
+}
+
 pub fn opencode_plugin_dir() -> Result<PathBuf, String> {
     Ok(home_dir()?.join(".config").join("opencode").join("plugins"))
 }

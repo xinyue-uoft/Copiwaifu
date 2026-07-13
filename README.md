@@ -4,7 +4,7 @@
 
 Your Live2D AI navigator for everyday coding sessions.
 
-Copiwaifu is a Tauri desktop pet that mirrors the state of your AI coding tools and turns that activity into a small Live2D companion on your desktop. It currently focuses on syncing with Claude Code, GitHub Copilot, Codex, Gemini CLI, and OpenCode, with optional AI Talk bubbles generated from saved session metadata after a coding turn finishes.
+Copiwaifu is a Tauri desktop pet that mirrors the state of your AI coding tools and turns that activity into a small Live2D companion on your desktop. It currently focuses on syncing with Claude Code, OpenCode, and Pi, with optional AI Talk bubbles generated from saved session metadata after a coding turn finishes.
 
 ## Website
 
@@ -38,18 +38,16 @@ xattr -dr com.apple.quarantine /Applications/copiwaifu.app
 When the app starts, it:
 
 1. Launches a local HTTP server on `127.0.0.1` using port `23333` and falls back across the next available ports if needed.
-2. Installs local hooks for supported AI CLIs.
+2. Installs local hooks/extensions for supported AI harnesses.
 3. Receives hook events and converts them into Copiwaifu state changes.
 4. Persists local runtime data under `~/.copiwaifu`, including session digests under `~/.copiwaifu/sessions`.
 5. When AI Talk is enabled and a completed or failed turn has enough context, runs the local AI runtime through Vercel AI SDK and replaces the static completion/error bubble with a generated short sentence.
 
-The hook installer currently integrates with:
+The installer currently integrates with:
 
 - Claude Code via `~/.claude/settings.json`
-- GitHub Copilot via `~/.config/github-copilot/config.json`
-- Codex via `~/.codex/config.toml`
-- Gemini CLI via `~/.gemini/settings.json`
 - OpenCode via `~/.config/opencode/opencode.json`
+- Pi via the global extension `~/.pi/agent/extensions/copiwaifu.ts`
 
 Original hook definitions are backed up to `~/.copiwaifu/hooks/original-hooks.json`.
 
@@ -60,7 +58,6 @@ Copiwaifu keeps the native macOS desktop-pet window behavior while adding mainta
 - macOS: continues to use `tauri-nspanel`, hidden Dock behavior, and all-space window behavior.
 - Windows: does not load macOS-only plugins and uses Tauri's standard transparent, borderless, always-on-top window, system tray, and autostart plugin.
 - Hook and runtime files prefer the user's `.copiwaifu` directory, and fallback port files are written to the system temp directory instead of a hardcoded `/tmp`.
-- Codex `notify` configuration escapes Windows backslash paths as TOML strings.
 
 Windows maintenance notes are available in [docs/WINDOWS.zh-CN.md](docs/WINDOWS.zh-CN.md).
 

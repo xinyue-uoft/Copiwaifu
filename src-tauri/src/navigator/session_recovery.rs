@@ -95,12 +95,11 @@ fn recover_session(state: &mut NavigatorState, path: &PathBuf) {
         None => return,
     };
 
-    let agent = match json["agent"].as_str() {
-        Some("claude-code") => AgentType::ClaudeCode,
-        Some("opencode") => AgentType::OpenCode,
+    let agent = match json["agent"].as_str().and_then(recover_agent) {
+        Some(agent) => agent,
         // Session files from agents this build no longer integrates are stale
         // app-managed cache — clean them up like any aged session file.
-        Some(_) => {
+        None if json["agent"].as_str().is_some() => {
             let _ = fs::remove_file(path);
             return;
         }
@@ -108,7 +107,7 @@ fn recover_session(state: &mut NavigatorState, path: &PathBuf) {
     };
 
     // Never resurrect NeedsAttention across restarts: a persisted
-    // needsAttention flag says nothing about whether CC's dialog is still
+    // needsAttention flag says nothing about whether the agent's dialog is still
     // open, and stale ones used to produce ghost popups on every app start.
     let event_type = match json["status"].as_str() {
         Some("working") => EventType::Thinking,
@@ -165,6 +164,27 @@ fn recover_summary_from_events(json: &serde_json::Value) -> Option<String> {
     })
 }
 
+fn recover_agent(value: &str) -> Option<AgentType> {
+    match value {
+        "claude-code" => Some(AgentType::ClaudeCode),
+        "opencode" => Some(AgentType::OpenCode),
+        "pi" => Some(AgentType::Pi),
+        _ => None,
+    }
+}
+
 fn home_sessions_dir() -> Option<PathBuf> {
     platform::home_dir().map(|home| home.join(".copiwaifu").join("sessions"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{recover_agent, AgentType};
+
+    #[test]
+    fn recovers_pi_session_agent() {
+        assert_eq!(recover_agent("pi"), Some(AgentType::Pi));
+        assert_eq!(recover_agent("opencode"), Some(AgentType::OpenCode));
+        assert_eq!(recover_agent("codex"), None);
+    }
 }

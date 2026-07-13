@@ -5,19 +5,20 @@ use serde_json::{json, Value};
 use super::hook_helpers::{
     backup_path, claude_hook_obj, claude_settings_path, cmd_has_marker, codex_config_path,
     copilot_settings_path, gemini_settings_path, hook_command, hook_dir, opencode_config_path,
-    opencode_config_path_new, opencode_plugin_dir, opencode_plugin_path, read_json_or_default,
-    register_opencode_plugin, runtime_dir,
+    opencode_config_path_new, opencode_plugin_dir, opencode_plugin_path, pi_extension_dir,
+    pi_extension_path, read_json_or_default, register_opencode_plugin, runtime_dir,
     toml_build_notify, toml_remove_notify, toml_upsert_notify, write_json, SOURCE_MARKER,
 };
 use crate::platform;
 
 const COPIWAIFU_HOOK: &str = include_str!("../../../hooks/copiwaifu-hook.js");
 const COPIWAIFU_OPENCODE_PLUGIN: &str = include_str!("../../../hooks/copiwaifu-opencode.js");
+const COPIWAIFU_PI_EXTENSION: &str = include_str!("../../../hooks/copiwaifu-pi.ts");
 
 // ── Public API ────────────────────────────────────────────────────────────────
 //
-// Install targets Claude Code only. The remove_* paths for other agents are
-// kept so uninstall still scrubs traces left by older multi-agent builds.
+// Install targets Claude Code, OpenCode, and Pi. The remove_* paths for other
+// agents are kept so uninstall still scrubs traces left by older builds.
 
 pub fn install_hooks() -> Result<(), String> {
     let dir = hook_dir()?;
@@ -37,6 +38,9 @@ pub fn install_hooks() -> Result<(), String> {
 
     install_opencode_plugin()?;
     log::info!("[hooks] opencode plugin installed");
+
+    install_pi_extension()?;
+    log::info!("[hooks] pi extension installed");
     Ok(())
 }
 
@@ -47,6 +51,7 @@ pub fn uninstall_hooks() -> Result<(), String> {
     remove_codex_hooks()?;
     remove_gemini_hooks()?;
     remove_opencode_plugin()?;
+    remove_pi_extension()?;
 
     let dir = hook_dir()?;
     if dir.exists() {
@@ -331,5 +336,41 @@ fn cleanup_opencode_plugin_registration(config_path: &Path) -> Result<(), String
         root.as_object_mut().map(|obj| obj.remove("plugin"));
     }
     write_json(config_path, &root)
+}
+
+// ── Pi ────────────────────────────────────────────────────────────────────────
+
+fn install_pi_extension() -> Result<(), String> {
+    let extension_dir = pi_extension_dir()?;
+    fs::create_dir_all(&extension_dir).map_err(|e| e.to_string())?;
+
+    let extension_path = pi_extension_path()?;
+    if extension_path.exists() {
+        let existing = fs::read_to_string(&extension_path).map_err(|e| e.to_string())?;
+        if !existing.contains(SOURCE_MARKER) {
+            return Err(format!(
+                "refusing to overwrite existing pi extension: {}",
+                extension_path.display()
+            ));
+        }
+    }
+    fs::write(&extension_path, COPIWAIFU_PI_EXTENSION).map_err(|e| e.to_string())
+}
+
+fn remove_pi_extension() -> Result<(), String> {
+    let extension_path = pi_extension_path()?;
+    if !extension_path.exists() {
+        return Ok(());
+    }
+
+    let owned = fs::read_to_string(&extension_path)
+        .map(|content| content.contains(SOURCE_MARKER))
+        .unwrap_or(false);
+    if owned {
+        fs::remove_file(extension_path).map_err(|e| e.to_string())?;
+    } else {
+        log::warn!("[hooks] leaving non-Copiwaifu pi extension in place");
+    }
+    Ok(())
 }
 

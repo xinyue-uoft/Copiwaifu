@@ -11,6 +11,7 @@ pub enum AgentType {
     ClaudeCode,
     #[serde(rename = "opencode")]
     OpenCode,
+    Pi,
 }
 
 impl AgentType {
@@ -18,6 +19,7 @@ impl AgentType {
         match self {
             Self::ClaudeCode => "claude-code",
             Self::OpenCode => "opencode",
+            Self::Pi => "pi",
         }
     }
 }

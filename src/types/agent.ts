@@ -1,4 +1,4 @@
-export type AgentType = 'claude-code' | 'opencode'
+export type AgentType = 'claude-code' | 'opencode' | 'pi'
 
 /** Why a session waits on the user — drives popup card copy. */
 export type AttentionKind = 'permission' | 'choice'
