@@ -5,12 +5,13 @@ import type { SayOptions } from '../composables/useSpeechBubble'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { info as logInfo } from '@tauri-apps/plugin-log'
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import CompletionToast from '../components/CompletionToast.vue'
 import PetContextMenu from '../components/PetContextMenu.vue'
 import SpeechBubble from '../components/SpeechBubble.vue'
 import { useAgentState } from '../composables/useAgentState'
 import { useContextMenu } from '../composables/useContextMenu'
+import { useInteractiveRegions } from '../composables/useInteractiveRegions'
 import { useMainWindowLive2d } from '../composables/useMainWindowLive2d'
 import { BUBBLE_CLASS, limitAiTalkBubbleText, useSpeechBubble } from '../composables/useSpeechBubble'
 import { formatAgentLabel, getLanguageCopy } from '../i18n'
@@ -91,6 +92,7 @@ const {
   playState,
   refreshCurrentState,
   syncIdleMotionGroupConfig,
+  getSpriteRect,
 } = useMainWindowLive2d({
   canvasRef,
   modelUrl: activeModelUrl,
@@ -104,6 +106,22 @@ const {
     void refreshCurrentState()
   },
 })
+
+// Report the mouse-interactive rectangles (model, bubble, toasts, menu) to
+// Rust; the cursor everywhere else falls through to windows underneath.
+const { syncInteractiveRegions } = useInteractiveRegions({
+  canvasRef,
+  getSpriteRect,
+})
+
+// The 200ms interval covers slow drift; these watchers close the gap for
+// abrupt appearances (menu opens, bubble pops) so they are clickable at once.
+watch(
+  [isVisible, () => menuState.value.visible, () => completionBadges.value.length],
+  () => {
+    void nextTick().then(syncInteractiveRegions)
+  },
+)
 
 function greetingLines(name: string) {
   return ui.value.pet.greetings(name)

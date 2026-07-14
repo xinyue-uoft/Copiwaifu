@@ -1,11 +1,12 @@
-import type { MaybeRefOrGetter, Ref } from 'vue'
 import type { UnlistenFn } from '@tauri-apps/api/event'
+import type { MaybeRefOrGetter, Ref } from 'vue'
+import type { MotionGroupOption, TAgentState, WindowSizePreset } from '../types/agent'
+import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { Config, LogLevel } from 'easy-live2d'
 import { onMounted, onUnmounted, ref, toValue, watch } from 'vue'
-import { createLive2DRuntime } from '../live2d/runtime'
 import { createMotionController } from '../live2d/motion-controller'
-import type { MotionGroupOption, TAgentState, WindowSizePreset } from '../types/agent'
+import { createLive2DRuntime } from '../live2d/runtime'
 
 export interface UseMainWindowLive2dOptions {
   canvasRef: Ref<HTMLCanvasElement | undefined>
@@ -25,6 +26,7 @@ export function useMainWindowLive2d(options: UseMainWindowLive2dOptions) {
   let canvasResizeObserver: ResizeObserver | null = null
   let unlistenWindowResized: UnlistenFn | null = null
   let unlistenWindowScaleChanged: UnlistenFn | null = null
+  let unlistenGlobalCursor: UnlistenFn | null = null
 
   const motionController = createMotionController({
     getSprite: () => runtime?.getSprite() ?? null,
@@ -93,6 +95,12 @@ export function useMainWindowLive2d(options: UseMainWindowLive2dOptions) {
     unlistenWindowScaleChanged = await currentWindow.onScaleChanged(() => {
       void syncSize()
     })
+
+    // Global cursor stream from the Rust poller: keeps the gaze tracking the
+    // cursor even while the window is click-through (no native mouse events).
+    unlistenGlobalCursor = await listen<{ x: number, y: number }>('cursor:global', (event) => {
+      runtime?.setGaze(event.payload.x, event.payload.y)
+    })
   })
 
   onUnmounted(() => {
@@ -107,6 +115,11 @@ export function useMainWindowLive2d(options: UseMainWindowLive2dOptions) {
     if (unlistenWindowScaleChanged) {
       void unlistenWindowScaleChanged()
       unlistenWindowScaleChanged = null
+    }
+
+    if (unlistenGlobalCursor) {
+      void unlistenGlobalCursor()
+      unlistenGlobalCursor = null
     }
 
     if (canvasResizeObserver) {
@@ -141,5 +154,6 @@ export function useMainWindowLive2d(options: UseMainWindowLive2dOptions) {
     playState,
     refreshCurrentState,
     syncIdleMotionGroupConfig: motionController.syncIdleMotionGroupConfig,
+    getSpriteRect: () => runtime?.getSpriteRect() ?? null,
   }
 }

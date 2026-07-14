@@ -18,7 +18,10 @@ function label(): string {
 </script>
 
 <template>
-  <div class="completion-toast">
+  <div
+    class="completion-toast"
+    data-interactive-region
+  >
     <div class="toast-row">
       <span class="toast-icon">✅</span>
       <span class="toast-headline">完工啦！</span>

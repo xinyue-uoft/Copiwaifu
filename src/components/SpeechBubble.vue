@@ -17,6 +17,7 @@ const bubbleClassName = computed(() => `speech-bubble--${props.windowSize}`)
       v-if="visible"
       class="speech-bubble"
       :class="bubbleClassName"
+      data-interactive-region
     >
       <div class="speech-bubble__body">
         <span class="speech-bubble__text">{{ text }}</span>

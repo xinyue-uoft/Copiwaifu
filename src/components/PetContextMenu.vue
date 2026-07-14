@@ -23,6 +23,7 @@ defineEmits<{
       v-if="visible"
       class="menu"
       :style="{ left: `${x}px`, top: `${y}px` }"
+      data-interactive-region
       @click.stop
     >
       <button

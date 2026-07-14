@@ -6,6 +6,7 @@ use tauri::Manager;
 use std::process::Command;
 
 mod ai_talk;
+mod cursor_passthrough;
 mod navigator;
 mod platform;
 mod shell;
@@ -90,6 +91,8 @@ pub fn run() {
 
             platform::elevate_panel(&window)?;
 
+            cursor_passthrough::init(app);
+
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())
@@ -102,6 +105,7 @@ pub fn run() {
             navigator::notification::get_completions,
             navigator::notification::dismiss_completion,
             ai_talk::generate_ai_talk,
+            cursor_passthrough::set_interactive_regions,
             navigator::commands::uninstall_hooks,
             shell::commands::get_app_bootstrap,
             shell::commands::scan_model_directory,

@@ -23,7 +23,14 @@ function waitForNextFrame() {
   })
 }
 
-function fitSpriteToViewport(sprite: Live2DSprite, width: number, height: number) {
+export interface SpriteViewportRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+function fitSpriteToViewport(sprite: Live2DSprite, width: number, height: number): SpriteViewportRect {
   const modelSize = sprite.getModelCanvasSize()
   const availableWidth = Math.max(1, width - SPRITE_FIT_PADDING * 2)
   const availableHeight = Math.max(1, height - SPRITE_FIT_PADDING * 2)
@@ -33,7 +40,7 @@ function fitSpriteToViewport(sprite: Live2DSprite, width: number, height: number
     sprite.height = availableHeight
     sprite.x = SPRITE_FIT_PADDING
     sprite.y = SPRITE_FIT_PADDING
-    return
+    return { x: sprite.x, y: sprite.y, width: availableWidth, height: availableHeight }
   }
 
   const scale = Math.min(availableWidth / modelSize.width, availableHeight / modelSize.height)
@@ -44,6 +51,27 @@ function fitSpriteToViewport(sprite: Live2DSprite, width: number, height: number
   sprite.height = fittedHeight
   sprite.x = Math.round((width - fittedWidth) / 2)
   sprite.y = Math.round(height - fittedHeight - SPRITE_FIT_PADDING)
+  return { x: sprite.x, y: sprite.y, width: fittedWidth, height: fittedHeight }
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value))
+}
+
+/// Shape of the easy-live2d internals used by setGaze. The library exposes no
+/// public gaze API, so we reach into the pointer handler's transform; every
+/// access is guarded so a library update degrades to "no hover gaze".
+interface GazeInternals {
+  _pointerHandler?: {
+    getCanvasPoint?: (ev: { clientX: number, clientY: number }) => { x: number, y: number } | null
+    _viewTransform?: {
+      transformViewX?: (x: number) => number
+      transformViewY?: (y: number) => number
+    }
+  }
+  _model?: {
+    setDragging?: (x: number, y: number) => void
+  }
 }
 
 export function createLive2DRuntime(options: CreateLive2DRuntimeOptions) {
@@ -51,6 +79,7 @@ export function createLive2DRuntime(options: CreateLive2DRuntimeOptions) {
   let initialized = false
   let disposed = false
   let sprite: Live2DSprite | null = null
+  let spriteRect: SpriteViewportRect | null = null
   let mountToken = 0
   let resizeToken = 0
 
@@ -82,6 +111,7 @@ export function createLive2DRuntime(options: CreateLive2DRuntimeOptions) {
     app.stage.removeChild(sprite as any)
     sprite.destroy()
     sprite = null
+    spriteRect = null
   }
 
   function destroyModel() {
@@ -108,8 +138,41 @@ export function createLive2DRuntime(options: CreateLive2DRuntimeOptions) {
       return
     }
 
-    fitSpriteToViewport(sprite, width, height)
+    spriteRect = fitSpriteToViewport(sprite, width, height)
     sprite.onResize()
+  }
+
+  /** Fitted model rect in canvas-local CSS pixels, null until the first fit. */
+  function getSpriteRect() {
+    return spriteRect
+  }
+
+  /**
+   * Point the model's gaze at a window-local (client) coordinate. Driven by
+   * the Rust global-cursor stream, so it works even while the window is
+   * click-through and receives no native mouse events.
+   */
+  function setGaze(clientX: number, clientY: number) {
+    if (!initialized || disposed || !sprite) {
+      return
+    }
+
+    const internals = sprite as unknown as GazeInternals
+    const handler = internals._pointerHandler
+    const transform = handler?._viewTransform
+    const model = internals._model
+    if (!handler?.getCanvasPoint || !transform?.transformViewX || !transform.transformViewY || !model?.setDragging) {
+      return
+    }
+
+    const point = handler.getCanvasPoint({ clientX, clientY })
+    if (!point) {
+      return
+    }
+
+    const viewX = clamp(transform.transformViewX(point.x), -1, 1)
+    const viewY = clamp(transform.transformViewY(point.y), -1, 1)
+    model.setDragging(viewX, viewY)
   }
 
   async function mountModel(mountOptions: MountLive2DModelOptions) {
@@ -166,6 +229,8 @@ export function createLive2DRuntime(options: CreateLive2DRuntimeOptions) {
   return {
     init,
     getSprite,
+    getSpriteRect,
+    setGaze,
     syncSize,
     mountModel,
     destroyModel,
